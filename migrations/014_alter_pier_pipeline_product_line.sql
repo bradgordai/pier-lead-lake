@@ -23,6 +23,14 @@
 --
 -- Note: the spec's ordering reserved "014" for pg_cron (V1.1, deferred and never
 -- generated). This 014 is the real next migration in the applied sequence.
+--
+-- Supabase migration-history name mismatch:
+-- This migration was applied via the Supabase MCP under the name
+-- "014_pier_pipeline_product_line_to_text", so that is what appears in Supabase's
+-- migration history. The file was later renamed on disk to
+-- "014_alter_pier_pipeline_product_line.sql". The applied name cannot be changed
+-- retroactively. The on-disk filename is the source of truth; the Supabase
+-- history name is historical only. The SQL body is identical either way.
 
 ALTER TABLE public.pier_pipeline
   ALTER COLUMN product_line TYPE TEXT USING product_line::text;
