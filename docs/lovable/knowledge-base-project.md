@@ -29,8 +29,13 @@ Team-scoped RLS on every table. Every table has team_id, RLS policy checks membe
 ## Design language
 - Dark mode first with light-mode toggle in top right
 - Dense info tables like Attio and Linear, not Salesforce
-- Primary colour: Pier navy #11144D
-- Accent: gold #FFAE00
+- Brand palette (Pier master brand, corrected 2026-07-09 against pierinsurance.com; NOT the old Pier Protect navy + gold):
+  - Primary / CTA: indigo #1D237A (hover #2B3299)
+  - Background base (dark): #030F42
+  - Elevated surfaces (cards, panels, sidebars): #11144D
+  - Text primary: white #FFFFFF; text muted: #B4B8D6; border / divider: #2A2E5F
+  - NO gold anywhere (#FFAE00 removed)
+- Status colours are separate from the brand: the Priority pill scale (P0 grey, P1 red, P2 amber, P3 green, OoS light grey, Competitor purple) is semantic, not brand. P2 "amber" is a status colour, not the old brand gold, so do not strip it.
 - Font: Inter throughout, no font mixing
 - Row heights 32 to 40px for tables
 - Sticky filter bar on all list views

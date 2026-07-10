@@ -1,5 +1,5 @@
 # Context
-Pier Lead Lake: a bespoke B2B CRM for Pier Insurance, a UK broker selling embedded gadget insurance to retailer partners. Users: 3 to 6 sales/ops; primary Oliver Müller (DACH). Volume ~420 companies, 261 contacts, 222 touches (to ~2000). Stack: Lovable, Supabase Postgres 17 (project qzfrcfzeiagziqjnfarw, eu-west-1, already provisioned), Make.com for CRM sync, PhantomBuster for LinkedIn. Design like Attio/Linear: dark-mode-first, dense tables, navy #11144D, gold #FFAE00, Inter.
+Pier Lead Lake: a bespoke B2B CRM for Pier Insurance, a UK broker selling embedded gadget insurance to retailer partners. Users: 3 to 6 sales/ops; primary Oliver Müller (DACH). Volume ~420 companies, 261 contacts, 222 touches (to ~2000). Stack: Lovable, Supabase Postgres 17 (project qzfrcfzeiagziqjnfarw, eu-west-1, already provisioned), Make.com CRM sync, PhantomBuster LinkedIn. Design like Attio/Linear: dark-mode-first, dense tables, indigo #1D237A on #030F42/#11144D, white text, Inter.
 
 # Data model
 Full schema in the Project Knowledge Base. Highlights:
