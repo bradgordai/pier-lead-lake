@@ -69,8 +69,9 @@ Last updated: 8 July 2026
 ## Design language
 
 32. **Dark mode first** with light-mode toggle top right
-33. **Primary colour**: Pier navy #11144D
-34. **Accent**: gold #FFAE00
+33. **Primary / CTA colour**: Pier indigo **#1D237A** (buttons and calls to action). Surface hierarchy: deep background **#030F42** (hero/base), mid navy **#11144D** (elevated surfaces).
+34. **Accent and text**: white **#FFFFFF** for text and accents. **NO gold anywhere** — the previous gold #FFAE00 is removed.
+    - Rationale: the original navy + gold palette came from the Pier Protect prospect deck (product-specific marketing), not Pier's master brand. Corrected 2026-07-09 against pierinsurance.com CSS inspection. Master brand is indigo #1D237A on deep navy #030F42, white text, no gold.
 35. **Font**: Inter throughout, no font mixing
 36. **Table density**: dense, Attio/Linear feel, not Salesforce
 37. **Colour coding on Priority pill**: P0 grey, P1 red, P2 amber, P3 green, OoS light grey, Competitor purple
@@ -109,3 +110,4 @@ Last updated: 8 July 2026
 ## Progress notes
 
 - 2026-07-08: 46 decisions locked. All 20 original UX decisions merged with 7 fresh decisions from mapping session plus LinkedIn integration and filter model.
+- 2026-07-09: Corrected brand palette (decisions 33-34) to Pier master brand — indigo #1D237A (CTA), deep navy #030F42 (base), mid navy #11144D (surfaces), white #FFFFFF (text). Removed Pier Protect gold #FFAE00 everywhere.
