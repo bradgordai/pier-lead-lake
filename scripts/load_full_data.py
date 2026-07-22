@@ -70,6 +70,7 @@ E_SENIORITY = {"C-suite", "Senior", "Director", "Manager", "Other"}
 E_FUNCTION = {
     "Alliances / BD", "Marketing", "Product", "Engineering", "Sales", "Finance",
     "Operations", "Legal", "HR", "Executive", "Other",
+    "Strategy",  # added in migration 018
 }
 E_CONNECTION_LEVEL = {"1st degree", "2nd degree", "3rd degree", "Not connected"}
 E_FORMALITY = {"Formal", "Informal"}
@@ -80,6 +81,7 @@ E_CONN_STATUS = {
 E_OUTREACH_STATUS = {
     "Not started", "Ready", "Active", "Contacted", "In conversation", "Cooldown",
     "Needs review", "Do not contact", "Left company",
+    "Not relevant",  # added in migration 018
 }
 E_CHANNEL = {
     "LinkedIn DM", "LinkedIn CR", "LinkedIn inMail", "Email", "Phone", "In-person", "Other",
@@ -98,8 +100,25 @@ E_REPLY_CLASS = {
 }
 
 # --------------------------------------------------------------------------
-# Aliases: workbook value -> enum member. Everything not covered here and not an
-# exact enum match is dropped with a warning (or falls back for NOT NULL columns).
+# Aliases: workbook value -> enum member.
+#
+# Anything not covered here and not an exact enum match is dropped with a warning
+# (or falls back to the column default for NOT NULL columns).
+#
+# Two workbook values that were previously aliased are now first-class enum
+# members (migration 018), so they map to themselves and are no longer coerced:
+#   'Strategy'      contacts.function        was -> 'Executive'      (78 rows)
+#   'Not relevant'  contacts.outreach_status was -> 'Do not contact' (8 rows)
+# 'Do not contact' is a GDPR/consent suppression state, so conflating it with a
+# commercial "not relevant" judgement was both lossy and unsafe.
+#
+# Remaining aliases below are still genuine coercions and are worth reviewing:
+#   'Commercial / Sales' -> 'Sales'            (45 contacts)
+#   'VP / Director'      -> 'Director'         (27 contacts)
+#   'Not sent'           -> 'Not connected'    (54 contacts)
+#   'To contact'         -> 'Not started'      (55 contacts)
+#   'Accepted'/'Replied' -> 'Replied / Accepted' (38 touches)
+#   reply-type variants  -> 'Reply'            (~20 touches)
 # --------------------------------------------------------------------------
 A_INDUSTRY = {
     "Software Provider": "Software",
@@ -114,14 +133,18 @@ A_CATEGORY = {  # applied per split token
 }
 A_SENIORITY = {"VP / Director": "Director", "VP": "Director", "Mid": "Other", "IC": "Other"}
 A_FUNCTION = {
-    "Strategy": "Executive", "Innovation / Strategy": "Executive", "Leadership": "Executive",
+    "Strategy": "Strategy",  # identity since migration 018 (was -> 'Executive')
+    "Innovation / Strategy": "Strategy", "Leadership": "Executive",
     "C-suite": "Executive", "Commercial / Sales": "Sales", "Insurance / Risk": "Other",
     "Procurement": "Operations",
 }
 A_CONNECTION_LEVEL = {"Unknown": None}
 A_FORMALITY = {"Sie / formal": "Formal"}
 A_CONN_STATUS = {"Not sent": "Not connected"}
-A_OUTREACH_STATUS = {"To contact": "Not started", "Not relevant": "Do not contact"}
+A_OUTREACH_STATUS = {
+    "To contact": "Not started",
+    "Not relevant": "Not relevant",  # identity since migration 018 (was -> 'Do not contact')
+}
 A_CHANNEL = {"Sales Nav InMail": "LinkedIn inMail"}
 A_TOUCH_TYPE = {
     "Reply received": "Reply", "Reply to no": "Reply", "Reply to referral": "Reply",
