@@ -36,7 +36,25 @@ from openpyxl import load_workbook
 
 DEFAULT_WORKBOOK = os.path.expanduser("~/Documents/260427_PIER_lead_lake_v09_OM_C2.xlsx")
 DATA_START_ROW = 5
-PHASE_A_LIMIT = 30
+
+# Phase A is an explicit, priority-weighted sample rather than the first N rows.
+# Sheet order put 28 of the first 30 in OoS with sparse fields, which barely
+# exercised the UI. This set is top-of-band across every priority so the Companies
+# list is validated against richly-populated rows (revenue, employees, monthly
+# visits, category arrays, insurance state, notes).
+# Distribution: 10 P0, 8 P1, 6 P2, 4 P3, 2 OoS.
+PHASE_A_COMPANY_IDS = [
+    # P0
+    "C218", "C263", "C223", "C229", "C119", "C045", "C185", "C207", "C001", "C148",
+    # P1
+    "C241", "C093", "C246", "C109", "C242", "C061", "C216", "C295",
+    # P2
+    "C238", "C285", "C290", "C329", "C330", "C257",
+    # P3
+    "C208", "C132", "C140", "C255",
+    # OoS
+    "C350", "C302",
+]
 
 warnings: Counter = Counter()
 
@@ -503,9 +521,15 @@ def main() -> int:
 
     if args.phase == "a":
         # Parse companies only, so the warning report reflects exactly what loads.
-        companies = companies[:PHASE_A_LIMIT]
+        by_id = {r["company_id"]: r for r in companies}
+        missing = [cid for cid in PHASE_A_COMPANY_IDS if cid not in by_id]
+        if missing:
+            print(f"ERROR: Phase A ids not found in workbook: {missing}", file=sys.stderr)
+            return 1
+        companies = [by_id[cid] for cid in PHASE_A_COMPANY_IDS]
         contacts, outreach = [], []
-        print(f"Phase A: first {len(companies)} companies (contacts/outreach deferred to phase B)")
+        print(f"Phase A: {len(companies)} priority-weighted companies "
+              f"(contacts/outreach deferred to phase B)")
     else:
         contacts = read_contacts(wb["Contacts"])
         outreach = read_outreach(wb["Outreach Log"])
