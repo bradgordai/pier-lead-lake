@@ -504,6 +504,121 @@ def sql_outreach(rows):
     )
 
 
+def _strip_none(d):
+    """Drop keys whose value is None so DB defaults (e.g. date_added=CURRENT_DATE) apply."""
+    return {k: v for k, v in d.items() if v is not None}
+
+
+def _chunk(seq, n):
+    for i in range(0, len(seq), n):
+        yield seq[i:i + n]
+
+
+def direct_load(companies, contacts, outreach, url, key):
+    """Load via supabase-py (service role bypasses RLS). Resolves team_id and all
+    FK UUIDs client-side, FK-validates contacts/outreach, writes reject CSVs, and
+    reports counts + timing. Idempotent via upsert on the natural unique keys."""
+    import time
+    from supabase import create_client
+
+    outputs = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "outputs")
+    os.makedirs(outputs, exist_ok=True)
+    client = create_client(url, key)
+
+    def upsert(table, rows, conflict):
+        n = 0
+        for ch in _chunk(rows, 50):
+            client.table(table).upsert(ch, on_conflict=conflict).execute()
+            n += len(ch)
+        return n
+
+    def write_rejects(path, header, rows):
+        import csv
+        with open(path, "w", newline="") as fh:
+            w = csv.writer(fh)
+            w.writerow(header)
+            w.writerows(rows)
+
+    t0 = time.time()
+    team_id = client.table("teams").select("id").eq("slug", "pier").single().execute().data["id"]
+    today = dt.date.today().isoformat()  # matches the SQL path's date_added=CURRENT_DATE default
+    timings = {}
+
+    # --- Companies ---
+    # NOT NULL columns with a DB default (date_added) must carry an explicit value:
+    # PostgREST fills omitted keys with NULL, not the default, in multi-row upserts.
+    t = time.time()
+    crows = [_strip_none({**r, "team_id": team_id, "date_added": r.get("date_added") or today})
+             for r in companies]
+    comp_n = upsert("companies", crows, "company_id")
+    timings["companies"] = time.time() - t
+
+    # company_id (Cnnn) -> UUID map, pulled from what actually landed
+    cmap = {}
+    for ch in _chunk([r["company_id"] for r in companies], 200):
+        for row in client.table("companies").select("id,company_id").in_("company_id", ch).execute().data:
+            cmap[row["company_id"]] = row["id"]
+
+    # --- Contacts (FK-validate company_ref) ---
+    t = time.time()
+    contact_rows, contact_rej = [], []
+    for r in contacts:
+        ref = r.get("company_ref")
+        if not ref:
+            contact_rej.append((r["contact_id"], "", "blank_company_ref")); continue
+        if ref not in cmap:
+            contact_rej.append((r["contact_id"], ref, "company_not_loaded")); continue
+        # first_name/last_name are NOT NULL. Some workbook rows have a job_title +
+        # company but no name (a research stub). Keep the row with '' rather than
+        # dropping it (which would also orphan its outreach); flag for review.
+        if not r.get("first_name") or not r.get("last_name"):
+            warn("contacts.name (blank, defaulted to '')", r["contact_id"])
+        contact_rows.append(_strip_none({**r, "team_id": team_id, "company_id": cmap[ref],
+                                          "date_added": r.get("date_added") or today,
+                                          "first_name": r.get("first_name") or "",
+                                          "last_name": r.get("last_name") or ""}))
+    con_n = upsert("contacts", contact_rows, "contact_id") if contact_rows else 0
+    write_rejects(os.path.join(outputs, "rejected_contacts.csv"),
+                  ["contact_id", "company_ref", "reason"], contact_rej)
+    timings["contacts"] = time.time() - t
+
+    # contact_id (Pnnn) -> (UUID, company UUID) map
+    pmap = {}
+    for ch in _chunk([r["contact_id"] for r in contact_rows], 200):
+        for row in client.table("contacts").select("id,contact_id,company_id").in_("contact_id", ch).execute().data:
+            pmap[row["contact_id"]] = (row["id"], row["company_id"])
+
+    # --- Outreach (FK-validate contact_ref) ---
+    t = time.time()
+    out_rows, out_rej = [], []
+    for r in outreach:
+        ref = r.get("contact_ref")
+        if not ref:
+            out_rej.append((r["touch_id"], "", "blank_contact_ref")); continue
+        if ref not in pmap:
+            out_rej.append((r["touch_id"], ref, "contact_not_loaded")); continue
+        cid, coid = pmap[ref]
+        if not r.get("touch_date"):  # touch_date is NOT NULL with no DB default
+            warn("outreach.touch_date (blank, defaulted to today)", r["touch_id"])
+        out_rows.append(_strip_none({**r, "team_id": team_id, "contact_id": cid, "company_id": coid,
+                                     "touch_date": r.get("touch_date") or today}))
+    out_n = upsert("outreach_log", out_rows, "touch_id") if out_rows else 0
+    write_rejects(os.path.join(outputs, "rejected_outreach.csv"),
+                  ["touch_id", "contact_ref", "reason"], out_rej)
+    timings["outreach"] = time.time() - t
+
+    print("\n=== DIRECT LOAD COMPLETE ===")
+    print(f"  companies    loaded {comp_n:>4}                              ({timings['companies']:.1f}s)")
+    print(f"  contacts     loaded {con_n:>4}  rejected {len(contact_rej):>3}          ({timings['contacts']:.1f}s)")
+    print(f"  outreach_log loaded {out_n:>4}  rejected {len(out_rej):>3}          ({timings['outreach']:.1f}s)")
+    print(f"  total wall clock: {time.time() - t0:.1f}s")
+    for tid, ref, why in contact_rej:
+        print(f"    reject contact  {tid} ref={ref} {why}")
+    for tid, ref, why in out_rej:
+        print(f"    reject outreach {tid} ref={ref} {why}")
+    return 0
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--workbook", default=DEFAULT_WORKBOOK)
@@ -554,7 +669,19 @@ def main() -> int:
 
     if args.dry_run:
         print("--dry-run: nothing written to the database.")
-    return 0
+        return 0
+
+    if args.emit_sql:
+        return 0
+
+    # Default action: load directly via supabase-py (service role).
+    url = os.environ.get("SUPABASE_URL")
+    key = os.environ.get("SUPABASE_SERVICE_ROLE_KEY")
+    if not url or not key:
+        print("ERROR: set SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY to load, "
+              "or use --emit-sql / --dry-run.", file=sys.stderr)
+        return 2
+    return direct_load(companies, contacts, outreach, url, key)
 
 
 if __name__ == "__main__":
