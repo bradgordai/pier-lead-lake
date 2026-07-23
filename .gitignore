@@ -40,3 +40,6 @@ yarn-error.log*
 .vscode/
 .idea/
 *.swp
+
+# Phase load run artifacts (rejected rows, logs) - data, not committed
+outputs/
