@@ -504,11 +504,6 @@ def sql_outreach(rows):
     )
 
 
-def _strip_none(d):
-    """Drop keys whose value is None so DB defaults (e.g. date_added=CURRENT_DATE) apply."""
-    return {k: v for k, v in d.items() if v is not None}
-
-
 def _chunk(seq, n):
     for i in range(0, len(seq), n):
         yield seq[i:i + n]
@@ -547,8 +542,11 @@ def direct_load(companies, contacts, outreach, url, key):
     # --- Companies ---
     # NOT NULL columns with a DB default (date_added) must carry an explicit value:
     # PostgREST fills omitted keys with NULL, not the default, in multi-row upserts.
+    # Keep every row's key set uniform for the same reason: upsert() batches 50 rows
+    # per request, so dropping a key on only some rows makes what lands depend on how
+    # the rows happen to chunk. The readers already emit a fixed key set per table.
     t = time.time()
-    crows = [_strip_none({**r, "team_id": team_id, "date_added": r.get("date_added") or today})
+    crows = [{**r, "team_id": team_id, "date_added": r.get("date_added") or today}
              for r in companies]
     comp_n = upsert("companies", crows, "company_id")
     timings["companies"] = time.time() - t
@@ -573,10 +571,10 @@ def direct_load(companies, contacts, outreach, url, key):
         # dropping it (which would also orphan its outreach); flag for review.
         if not r.get("first_name") or not r.get("last_name"):
             warn("contacts.name (blank, defaulted to '')", r["contact_id"])
-        contact_rows.append(_strip_none({**r, "team_id": team_id, "company_id": cmap[ref],
-                                          "date_added": r.get("date_added") or today,
-                                          "first_name": r.get("first_name") or "",
-                                          "last_name": r.get("last_name") or ""}))
+        contact_rows.append({**r, "team_id": team_id, "company_id": cmap[ref],
+                             "date_added": r.get("date_added") or today,
+                             "first_name": r.get("first_name") or "",
+                             "last_name": r.get("last_name") or ""})
     con_n = upsert("contacts", contact_rows, "contact_id") if contact_rows else 0
     write_rejects(os.path.join(outputs, "rejected_contacts.csv"),
                   ["contact_id", "company_ref", "reason"], contact_rej)
@@ -600,8 +598,8 @@ def direct_load(companies, contacts, outreach, url, key):
         cid, coid = pmap[ref]
         if not r.get("touch_date"):  # touch_date is NOT NULL with no DB default
             warn("outreach.touch_date (blank, defaulted to today)", r["touch_id"])
-        out_rows.append(_strip_none({**r, "team_id": team_id, "contact_id": cid, "company_id": coid,
-                                     "touch_date": r.get("touch_date") or today}))
+        out_rows.append({**r, "team_id": team_id, "contact_id": cid, "company_id": coid,
+                         "touch_date": r.get("touch_date") or today})
     out_n = upsert("outreach_log", out_rows, "touch_id") if out_rows else 0
     write_rejects(os.path.join(outputs, "rejected_outreach.csv"),
                   ["touch_id", "contact_ref", "reason"], out_rej)
