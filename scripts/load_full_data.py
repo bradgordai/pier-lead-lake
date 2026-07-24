@@ -672,7 +672,7 @@ def main() -> int:
             parts.append(sql_contacts(contacts))
         if outreach:
             parts.append(sql_outreach(outreach))
-        with open(args.emit_sql, "w") as fh:
+        with open(args.emit_sql, "w", encoding="utf-8") as fh:
             fh.write("\n\n".join(parts))
         print(f"\nWrote SQL to {args.emit_sql}")
 
