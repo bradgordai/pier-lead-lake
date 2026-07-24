@@ -533,7 +533,7 @@ def direct_load(companies, contacts, outreach, url, key):
 
     def write_rejects(path, header, rows):
         import csv
-        with open(path, "w", newline="") as fh:
+        with open(path, "w", newline="", encoding="utf-8") as fh:
             w = csv.writer(fh)
             w.writerow(header)
             w.writerows(rows)
