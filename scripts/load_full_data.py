@@ -22,6 +22,10 @@ Columns deliberately NOT written (database triggers own them):
   contacts.email_normalised          - tg_normalise_contact_fields
   contacts.cooldown_status_derived   - tg_update_cooldown_status
 
+Environment (direct-load path only, i.e. no --emit-sql / --dry-run):
+  SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY - required
+  PIER_TEAM_SLUG                          - optional, defaults to 'pier'
+
 Dependencies: openpyxl (plus supabase only if loading directly rather than emitting SQL).
 """
 from __future__ import annotations
@@ -535,7 +539,14 @@ def direct_load(companies, contacts, outreach, url, key):
             w.writerows(rows)
 
     t0 = time.time()
-    team_id = client.table("teams").select("id").eq("slug", "pier").single().execute().data["id"]
+    team_slug = os.environ.get("PIER_TEAM_SLUG", "pier")
+    team_res = client.table("teams").select("id").eq("slug", team_slug).execute()
+    if not team_res.data:
+        raise RuntimeError(
+            f"Team '{team_slug}' not found in the teams table. "
+            f"Set PIER_TEAM_SLUG to the correct slug, or verify the team exists."
+        )
+    team_id = team_res.data[0]["id"]
     today = dt.date.today().isoformat()  # matches the SQL path's date_added=CURRENT_DATE default
     timings = {}
 
