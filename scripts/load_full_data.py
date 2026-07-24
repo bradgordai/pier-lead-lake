@@ -77,6 +77,8 @@ E_CATEGORY = {
     "Pure Online Phone Retailer", "Refurbished Specialist", "Electronics",
     "Multi-Category Retailer", "Operator", "Manufacturer", "Marketplace",
     "Comparison Site", "Industry Media", "Influencer", "Other",
+    # added in migration 021 (previously dropped as unmappable)
+    "Refurb", "Recommerce", "Software Provider", "Wholesaler", "Distributor",
 }
 E_INS_STRUCTURE = {
     "Optional Add-On", "Bundled", "Upsold", "Embedded in T&Cs",
@@ -134,6 +136,14 @@ E_REPLY_CLASS = {
 # 'Do not contact' is a GDPR/consent suppression state, so conflating it with a
 # commercial "not relevant" judgement was both lossy and unsafe.
 #
+# Five companies.category tokens were previously in the known-drop list (mapped
+# to None, i.e. silently discarded per token). They are enum members as of
+# migration 021 and now pass through as identity, so A_CATEGORY is empty:
+#   'Refurb'  'Recommerce'  'Software Provider'  'Wholesaler'  'Distributor'
+# They describe how a company trades, not what it sells, so there was no honest
+# existing member to fold them into. Migration 022 backfills the rows that had
+# already loaded without them.
+#
 # Remaining aliases below are still genuine coercions and are worth reviewing:
 #   'Commercial / Sales' -> 'Sales'            (45 contacts)
 #   'VP / Director'      -> 'Director'         (27 contacts)
@@ -149,10 +159,7 @@ A_INDUSTRY = {
     "Industry Media / Influencer": "Industry Media",
     "B2B IT Leasing / Asset Management": "Other",
 }
-A_CATEGORY = {  # applied per split token
-    "Refurb": None, "Recommerce": None,
-    "Software Provider": None, "Wholesaler": None, "Distributor": None,
-}
+A_CATEGORY = {}  # applied per split token; empty since migration 021
 A_SENIORITY = {"VP / Director": "Director", "VP": "Director", "Mid": "Other", "IC": "Other"}
 A_FUNCTION = {
     "Strategy": "Strategy",  # identity since migration 018 (was -> 'Executive')
