@@ -21,8 +21,10 @@ WITH backfill(company_id, tokens) AS (
 )
 UPDATE public.companies c
 SET category = c.category || ARRAY(
-      SELECT t FROM unnest(b.tokens) AS t
-      WHERE NOT (t = ANY(c.category))
+      SELECT u.token
+      FROM unnest(b.tokens) WITH ORDINALITY AS u(token, ord)
+      WHERE NOT (u.token = ANY(c.category))
+      ORDER BY u.ord
     )
 FROM backfill b
 WHERE c.company_id = b.company_id
