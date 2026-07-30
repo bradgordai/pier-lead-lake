@@ -92,12 +92,29 @@ Deno.serve(async (req) => {
     if (updErr) throw updErr;
 
     console.log(JSON.stringify({ event: "connection_accepted", contact_id: contact.id, previous_status: previousStatus }));
-    // Draft generation intentionally NOT fired here (separate Edge Function coming next).
+
+    // Chain into generate-draft-from-context. The connection flip is the primary success;
+    // draft generation is best-effort and never fails the request.
+    let draft: unknown = null;
+    try {
+      const draftResp = await fetch(`${SUPABASE_URL}/functions/v1/generate-draft-from-context`, {
+        method: "POST",
+        headers: { authorization: `Bearer ${MAKE_SHARED_SECRET}`, "content-type": "application/json" },
+        body: JSON.stringify({ contact_id: contact.id, trigger_reason: "cr_accepted" }),
+      });
+      draft = await draftResp.json().catch(() => ({ ok: false, http: draftResp.status }));
+      console.log(JSON.stringify({ event: "draft_triggered", http: draftResp.status }));
+    } catch (e) {
+      console.error(JSON.stringify({ event: "draft_trigger_failed", message: (e as Error).message ?? String(e) }));
+      draft = { error: "draft_trigger_failed" };
+    }
+
     return json(200, {
       status: "updated",
       contact_id: contact.id,
       previous_status: previousStatus,
       action: "connection_accepted",
+      draft,
     });
   } catch (e) {
     console.error(JSON.stringify({ event: "handler_error", message: (e as Error).message ?? String(e) }));
