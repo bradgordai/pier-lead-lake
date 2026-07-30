@@ -1,11 +1,15 @@
 // Edge Function: update-contact-on-cr-accepted
 //
 // Called by Make.com after the "Recently Connected" phantom fires, once per newly
-// accepted LinkedIn connection. Flow: verify shared secret -> look up the contact by
-// linkedin_url within the team -> if it's a Pier lead (has a Sales Nav list) flip
-// connection_status to 'Accepted' and stamp last_contacted; otherwise ignore. Draft
-// generation is deliberately NOT triggered here (that ships as a separate Edge
-// Function, generate-draft-from-context).
+// accepted LinkedIn connection. Flow: verify shared secret -> look up the contact
+// (by canonical linkedin_slug first, then linkedin_url) within the team -> if it's a
+// Pier lead (has a Sales Nav list) flip connection_status to 'Accepted' and stamp
+// last_contacted, then best-effort chain generate-draft-from-context; otherwise ignore.
+//
+// URL handling (migration 031): the Sales Nav import stored /sales/lead/ in linkedin_url
+// but the canonical /in/{slug} in linkedin_slug; the Recently Connected phantom emits a
+// public /in/{slug} URL. So we extract the slug from the incoming profileUrl and match on
+// linkedin_slug first, falling back to linkedin_url for rows that stored a /in/ URL directly.
 //
 // Security / conventions (mirrors upsert-contact-from-sales-nav):
 //   - service_role is used ONLY to construct the Supabase client at boot (below).
@@ -14,8 +18,7 @@
 //     Deployed with verify_jwt=false so this Bearer reaches the handler.
 //   - DB errors are caught and returned as 500; the function never throws to the runtime.
 //   - The connection_status flip is an UPDATE on contacts, so the existing
-//     fn_audit_entity trigger records an "Updated <name>" audit_log row automatically —
-//     no manual audit write is needed here.
+//     fn_audit_entity trigger records an "Updated <name>" audit_log row automatically.
 
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.45.4";
 
@@ -35,6 +38,11 @@ const json = (status: number, body: any) =>
 
 function normalizeUrl(u: string): string {
   return (u ?? "").trim().replace(/\/+$/, "");
+}
+// Canonical LinkedIn slug from a public /in/{slug} URL (matches migration 031's regex).
+function extractSlug(url: string): string | null {
+  const m = /linkedin\.com\/in\/([^/?#]+)/i.exec(url ?? "");
+  return m ? m[1] : null;
 }
 
 Deno.serve(async (req) => {
@@ -56,21 +64,31 @@ Deno.serve(async (req) => {
   const profileUrl = String(body?.profileUrl ?? "").trim();
   if (!profileUrl) return json(400, { error: "missing_required_fields", detail: "profileUrl is required" });
   const linkedinUrl = normalizeUrl(profileUrl);
+  const slug = extractSlug(profileUrl); // Recently Connected always emits /in/ format
 
   try {
-    // Look up the contact within the team.
-    const { data: contact, error: lookupErr } = await supabase
-      .from("contacts")
-      .select("id, connection_status, sn_lists, company_id")
-      .eq("team_id", PIER_TEAM_ID)
-      .eq("linkedin_url", linkedinUrl)
-      .limit(1)
-      .maybeSingle();
-    if (lookupErr) throw lookupErr;
+    // Look up the contact within the team: canonical slug first, then linkedin_url
+    // (backward compatible for rows that stored a /in/ URL directly).
+    // deno-lint-ignore no-explicit-any
+    let contact: any = null;
+    if (slug) {
+      const r = await supabase
+        .from("contacts").select("id, connection_status, sn_lists, company_id")
+        .eq("team_id", PIER_TEAM_ID).eq("linkedin_slug", slug).limit(1).maybeSingle();
+      if (r.error) throw r.error;
+      contact = r.data;
+    }
+    if (!contact) {
+      const r = await supabase
+        .from("contacts").select("id, connection_status, sn_lists, company_id")
+        .eq("team_id", PIER_TEAM_ID).eq("linkedin_url", linkedinUrl).limit(1).maybeSingle();
+      if (r.error) throw r.error;
+      contact = r.data;
+    }
 
     // Not a Pier lead (could be a personal CR) — ignore.
     if (!contact) {
-      console.log(JSON.stringify({ event: "ignored", reason: "not_in_pier_pipeline", url: linkedinUrl }));
+      console.log(JSON.stringify({ event: "ignored", reason: "not_in_pier_pipeline", slug, url: linkedinUrl }));
       return json(200, { status: "ignored", reason: "not_in_pier_pipeline" });
     }
 

@@ -1,16 +1,22 @@
 // Edge Function: upsert-contact-from-sales-nav
 //
 // Called by Make.com after the Sales Nav "List Export" phantom fires, once per lead.
-// Flow: verify shared secret -> dedupe by linkedin_url -> resolve company
-// (exact -> alias cache -> AI fuzzy match) -> insert contact -> return status.
+// Flow: verify shared secret -> dedupe (canonical linkedin_slug first, then URL) ->
+// resolve company (exact -> alias cache -> AI fuzzy match) -> insert contact.
+//
+// URL handling (migration 031): the Sales Nav phantom's `profileUrl` is the internal
+// /sales/lead/ACw... format, which never matches the public /in/{slug} URL the
+// "Recently Connected" phantom emits. So we prefer the phantom's `linkedInProfileUrl`
+// (public /in/ URL) for linkedin_url storage, and extract a canonical `linkedin_slug`
+// from whichever /in/ URL is available. If only a /sales/lead/ URL exists, linkedin_slug
+// stays NULL (the contact won't match on accept until re-ingested with a public URL).
 //
 // Security / conventions:
 //   - service_role is used ONLY to construct the Supabase client at boot (below).
 //     Every query is explicitly scoped to PIER_TEAM_ID and company matches are
 //     restricted to archived_at IS NULL, because service_role bypasses RLS.
 //   - Custom auth: callers present `Authorization: Bearer <MAKE_SHARED_SECRET>`.
-//     The function is deployed with verify_jwt=false so this Bearer (not a Supabase
-//     JWT) reaches the handler.
+//     The function is deployed with verify_jwt=false so this Bearer reaches the handler.
 //   - Anthropic failures never crash the function: any error/malformed response is
 //     treated as an unmatched company.
 
@@ -57,13 +63,18 @@ function diceSimilarity(a: string, b: string): number {
 function normalizeUrl(u: string): string {
   return (u ?? "").trim().replace(/\/+$/, "");
 }
+// Canonical LinkedIn slug from a public /in/{slug} URL (matches migration 031's regex).
+// Returns null for /sales/lead/ or any non-/in/ URL.
+function extractSlug(url: string): string | null {
+  const m = /linkedin\.com\/in\/([^/?#]+)/i.exec(url ?? "");
+  return m ? m[1] : null;
+}
 function uniquePush(arr: unknown, v: string): string[] {
   const base = Array.isArray(arr) ? (arr as string[]).slice() : [];
   if (v && !base.includes(v)) base.push(v);
   return base;
 }
 
-// deno-lint-ignore no-explicit-any
 type Company = { id: string; company_id: string | null; company_name: string; country: string | null; industry: string | null };
 
 // deno-lint-ignore no-explicit-any
@@ -156,14 +167,31 @@ Deno.serve(async (req) => {
   const location = String(body?.location ?? "").trim() || null;
   const connectionDegree = String(body?.connectionDegree ?? "").trim();
   const listName = String(body?.listName ?? "").trim();
-  const linkedinUrl = normalizeUrl(profileUrl);
+
+  // URL canonicalization (migration 031): prefer the public /in/ URL for storage + slug.
+  const linkedInProfileUrl = String(body?.linkedInProfileUrl ?? "").trim();
+  const storedLinkedinUrl = normalizeUrl(linkedInProfileUrl || profileUrl);
+  const profileUrlNorm = normalizeUrl(profileUrl);
+  const slug = extractSlug(linkedInProfileUrl) ?? extractSlug(profileUrl); // null if only /sales/lead/
 
   try {
-    // ---------- 1. Dedupe by linkedin_url within team ----------
-    const { data: existing, error: dupErr } = await supabase
-      .from("contacts").select("id, contact_id, sn_lists, company_id, archived_at")
-      .eq("team_id", PIER_TEAM_ID).eq("linkedin_url", linkedinUrl).limit(1).maybeSingle();
-    if (dupErr) throw dupErr;
+    // ---------- 1. Dedupe: canonical slug first, then raw URL (backward compatible) ----------
+    // deno-lint-ignore no-explicit-any
+    let existing: any = null;
+    if (slug) {
+      const r = await supabase
+        .from("contacts").select("id, contact_id, sn_lists, company_id, archived_at")
+        .eq("team_id", PIER_TEAM_ID).eq("linkedin_slug", slug).limit(1).maybeSingle();
+      if (r.error) throw r.error;
+      existing = r.data;
+    }
+    if (!existing) {
+      const r = await supabase
+        .from("contacts").select("id, contact_id, sn_lists, company_id, archived_at")
+        .eq("team_id", PIER_TEAM_ID).eq("linkedin_url", profileUrlNorm).limit(1).maybeSingle();
+      if (r.error) throw r.error;
+      existing = r.data;
+    }
 
     if (existing) {
       // Assert: a live re-import should not be resolving a soft-deleted contact.
@@ -241,7 +269,8 @@ Deno.serve(async (req) => {
       last_name: lastName,
       job_title: headline,              // from headline
       location,
-      linkedin_url: linkedinUrl,
+      linkedin_url: storedLinkedinUrl,  // prefer public /in/ URL (migration 031)
+      linkedin_slug: slug,              // canonical slug; null if only /sales/lead/ available
       source_list: listName || null,
       sn_lists: listName ? [listName] : [],
       connection_status: connectionStatus,
@@ -262,13 +291,14 @@ Deno.serve(async (req) => {
     }
     if (!inserted) throw new Error("contact_id_generation_exhausted");
 
-    console.log(JSON.stringify({ event: "created", contact_id: inserted.id, biz_id: bizId, company_id: companyId, source: matchSource, confidence }));
+    console.log(JSON.stringify({ event: "created", contact_id: inserted.id, biz_id: bizId, company_id: companyId, source: matchSource, confidence, slug }));
     return json(200, {
       status: "created",
       contact_id: inserted.id,
       company_id: companyId,
       company_match_source: matchSource,
       company_confidence: confidence,
+      linkedin_slug: slug,
       action: "inserted",
     });
   } catch (e) {
