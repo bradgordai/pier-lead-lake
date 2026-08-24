@@ -88,12 +88,22 @@ Deno.serve(async (req) => {
     const cutoff = new Date(Date.now() - 30 * 86400000).toISOString().slice(0, 10);
     const recent = allPrev.filter((r) => String(r.touch_date ?? "") >= cutoff);
     const older = allPrev.filter((r) => String(r.touch_date ?? "") < cutoff);
+    // Render each historical touch exactly once, correctly attributed by sender.
+    // touch_type='Reply' rows are INBOUND (from the contact); capture-and-classify
+    // writes the reply text into BOTH message_body and reply_content, so render only
+    // reply_content (fallback message_body for legacy rows) and never label it "Oli".
+    // Every non-Reply touch is OUTBOUND from Oli. This fixes the previous double-render
+    // where a Reply row appeared as both "Oli: <text>" and "Reply: <text>".
+    const who = contact.first_name ? String(contact.first_name) : "the contact";
     const renderMsg = (r: typeof allPrev[number]) => {
-      const lines = [`- ${r.touch_date ?? ""} [${r.channel ?? ""}/${r.touch_type ?? ""}]`];
-      if (r.subject_line) lines.push(`  Subject: ${r.subject_line}`);
-      if (r.message_body) lines.push(`  Oli: ${String(r.message_body).slice(0, 500)}`);
-      if (r.reply_content) lines.push(`  Reply: ${String(r.reply_content).slice(0, 500)}`);
-      return lines.join("\n");
+      const date = r.touch_date ?? "";
+      if (r.touch_type === "Reply") {
+        const body = String(r.reply_content ?? r.message_body ?? "").slice(0, 500);
+        return `- ${date} Reply from ${who}: ${body}`;
+      }
+      const subj = r.subject_line ? `[${r.subject_line}] ` : "";
+      const body = String(r.message_body ?? "").slice(0, 500);
+      return `- ${date} Oli: ${subj}${body}`;
     };
     let threadText: string;
     if (allPrev.length === 0) {
@@ -105,6 +115,8 @@ Deno.serve(async (req) => {
       const olderNote = older.length ? `(plus ${older.length} earlier message(s) before ${cutoff}, omitted as stale - do not repeat those openers)\n` : "";
       threadText = olderNote + recent.map(renderMsg).join("\n");
     }
+    // Diagnostic: the exact prior-thread string handed to the model (attribution check).
+    console.log(JSON.stringify({ event: "thread_context", contact_id: contactId, recent: recent.length, older: older.length, thread_preview: threadText.slice(0, 900) }));
 
     let systemPrompt = "";
     try {
