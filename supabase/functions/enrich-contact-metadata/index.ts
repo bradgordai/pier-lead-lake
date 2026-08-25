@@ -144,8 +144,13 @@ async function enrichRows(rows: Row[]): Promise<{ updated: number; warnings: str
     if (r.seniority == null && cls) patch.seniority = cls.seniority;
     if (r.language_code == null) patch.language_code = deriveLanguage(r.country, r.location);
     if (Object.keys(patch).length === 0) { results.push({ id: r.id, skipped: true }); continue; }
-    const { error } = await supabase.from("contacts").update(patch).eq("id", r.id).eq("team_id", PIER_TEAM_ID);
+    // Guard each patched column on IS NULL so a value curated between our SELECT and this
+    // UPDATE is never clobbered; the write lands only while those columns are still null.
+    let q = supabase.from("contacts").update(patch).eq("id", r.id).eq("team_id", PIER_TEAM_ID);
+    for (const k of Object.keys(patch)) q = q.is(k, null);
+    const { data: upd, error } = await q.select("id");
     if (error) { warnings.push(`update failed ${r.id}: ${error.message}`); results.push({ id: r.id, error: error.message }); continue; }
+    if ((upd?.length ?? 0) === 0) { results.push({ id: r.id, skipped_concurrent: true }); continue; }
     updated += 1;
     results.push({ id: r.id, ...patch });
   }

@@ -292,19 +292,25 @@ Deno.serve(async (req) => {
     }
     if (!inserted) throw new Error("contact_id_generation_exhausted");
 
-    // Best-effort: chain metadata enrichment (function/seniority/language) for the new
-    // contact. New rows are inserted with those fields NULL. The insert is the primary
-    // success; enrichment never fails the ingest and can be re-run via the backfill mode.
-    try {
-      const enrichResp = await fetch(`${SUPABASE_URL}/functions/v1/enrich-contact-metadata`, {
-        method: "POST",
-        headers: { authorization: `Bearer ${MAKE_SHARED_SECRET}`, "content-type": "application/json" },
-        body: JSON.stringify({ contact_id: inserted.id }),
-      });
-      console.log(JSON.stringify({ event: "enrich_triggered", http: enrichResp.status }));
-    } catch (e) {
-      console.error(JSON.stringify({ event: "enrich_trigger_failed", message: (e as Error).message ?? String(e) }));
-    }
+    // Best-effort, non-blocking metadata enrichment (function/seniority/language) for the
+    // new contact. New rows are inserted with those fields NULL. EdgeRuntime.waitUntil keeps
+    // the worker alive until it settles WITHOUT blocking the ingest response, so Make gets
+    // its answer immediately; enrichment can also be re-run via the backfill mode.
+    const enrichTask = (async () => {
+      try {
+        const enrichResp = await fetch(`${SUPABASE_URL}/functions/v1/enrich-contact-metadata`, {
+          method: "POST",
+          headers: { authorization: `Bearer ${MAKE_SHARED_SECRET}`, "content-type": "application/json" },
+          body: JSON.stringify({ contact_id: inserted.id }),
+        });
+        console.log(JSON.stringify({ event: "enrich_triggered", http: enrichResp.status }));
+      } catch (e) {
+        console.error(JSON.stringify({ event: "enrich_trigger_failed", message: (e as Error).message ?? String(e) }));
+      }
+    })();
+    // deno-lint-ignore no-explicit-any
+    const edgeRuntime = (globalThis as any).EdgeRuntime;
+    if (edgeRuntime?.waitUntil) edgeRuntime.waitUntil(enrichTask); else await enrichTask;
 
     console.log(JSON.stringify({ event: "created", contact_id: inserted.id, biz_id: bizId, company_id: companyId, source: matchSource, confidence, slug }));
     return json(200, {
