@@ -2,8 +2,9 @@
 //
 // Called by Make.com after the Sales Nav "List Export" phantom fires, once per lead.
 // Flow: verify shared secret -> dedupe (canonical linkedin_slug first, then URL) ->
-// resolve company (exact -> alias cache -> AI fuzzy match) -> insert contact ->
-// best-effort chain enrich-contact-metadata (function/seniority/language) for new rows.
+// resolve company (exact -> alias cache -> AI fuzzy match -> auto-create stub) ->
+// insert contact -> best-effort chain enrich-contact-metadata (function/seniority/
+// language) for new rows.
 //
 // URL handling (migration 031): the Sales Nav phantom's `profileUrl` is the internal
 // /sales/lead/ACw... format, which never matches the public /in/{slug} URL the
@@ -74,6 +75,54 @@ function uniquePush(arr: unknown, v: string): string[] {
   const base = Array.isArray(arr) ? (arr as string[]).slice() : [];
   if (v && !base.includes(v)) base.push(v);
   return base;
+}
+
+// Best-effort country inference from the Sales Nav `location` string, which is
+// usually "City, Region, Country" but can be just "Country" or a vague
+// "Greater X Area". We take the last comma-segment and normalize the long-form /
+// local-language variants LinkedIn emits onto the short forms the companies table
+// already uses (verified 2026-08-26: UK, Germany, Austria, Netherlands, France,
+// USA, Switzerland, Czech Republic, UAE...). Anything unrecognized is passed
+// through verbatim rather than dropped - a wrong-looking country on a
+// needs_review row is more useful to Oli than a NULL.
+const COUNTRY_SYNONYMS: Record<string, string> = {
+  "United Kingdom": "UK", "Great Britain": "UK", "England": "UK",
+  "Scotland": "UK", "Wales": "UK", "Northern Ireland": "UK",
+  "United States": "USA", "United States of America": "USA",
+  "Deutschland": "Germany",
+  "Osterreich": "Austria", "\u00d6sterreich": "Austria",
+  "Nederland": "Netherlands", "The Netherlands": "Netherlands", "Holland": "Netherlands",
+  "Schweiz": "Switzerland", "Suisse": "Switzerland", "Svizzera": "Switzerland",
+  "Belgie": "Belgium", "Belgi\u00eb": "Belgium", "Belgique": "Belgium",
+  "Espana": "Spain", "Espa\u00f1a": "Spain",
+  "Italia": "Italy", "France": "France",
+  "Czechia": "Czech Republic", "Cesko": "Czech Republic",
+  "Polska": "Poland", "Magyarorszag": "Hungary", "Magyarorsz\u00e1g": "Hungary",
+  "Sverige": "Sweden", "Suomi": "Finland", "Danmark": "Denmark",
+  "Eire": "Ireland", "\u00c9ire": "Ireland",
+  "United Arab Emirates": "UAE",
+};
+function inferCountryFromLocation(location: string | null): string | null {
+  if (!location) return null;
+  const parts = location.split(",").map((s) => s.trim()).filter(Boolean);
+  const last = parts[parts.length - 1] ?? "";
+  if (!last) return null;
+  return COUNTRY_SYNONYMS[last] ?? last;
+}
+
+// Continue the existing C### company_id series (data uses C001..C353). Mirrors
+// nextContactId below; company_id is NOT NULL UNIQUE with no default, so the
+// auto-create path must mint one itself.
+async function nextCompanyId(): Promise<string> {
+  const { data, error } = await supabase
+    .from("companies").select("company_id").eq("team_id", PIER_TEAM_ID).ilike("company_id", "C%").limit(5000);
+  if (error) throw error;
+  let max = 0;
+  for (const r of data ?? []) {
+    const m = /^C(\d+)$/.exec((r as { company_id: string }).company_id ?? "");
+    if (m) { const n = parseInt(m[1], 10); if (n > max) max = n; }
+  }
+  return "C" + String(max + 1).padStart(3, "0");
 }
 
 type Company = { id: string; company_id: string | null; company_name: string; country: string | null; industry: string | null };
@@ -163,8 +212,16 @@ Deno.serve(async (req) => {
     return json(400, { error: "missing_required_fields", detail: "profileUrl, firstName, lastName are required" });
   }
   const headline = String(body?.headline ?? "").trim() || null;
-  const companyName = String(body?.companyName ?? "").trim();
+  // T1a: prefer the Sales Nav "Associated Account" when Oli has tagged one on the
+  // lead, else fall back to the displayed companyName. associatedAccountName is
+  // frequently empty in Oli's live list, which is why the fallback exists.
+  const associatedAccountName = String(body?.associatedAccountName ?? "").trim();
+  const companyNameRaw = String(body?.companyName ?? "").trim();
+  const companyName = associatedAccountName || companyNameRaw;
   const companyUrl = String(body?.companyUrl ?? "").trim() || null;
+  // Public LinkedIn company page (vs companyUrl's internal /sales/company/ form);
+  // used as the provenance URL when auto-creating a company (T3b).
+  const regularCompanyUrl = String(body?.regularCompanyUrl ?? "").trim() || null;
   const location = String(body?.location ?? "").trim() || null;
   const connectionDegree = String(body?.connectionDegree ?? "").trim();
   const listName = String(body?.listName ?? "").trim();
@@ -215,7 +272,7 @@ Deno.serve(async (req) => {
     // ---------- 2. Company resolution (new contacts only) ----------
     let companyId: string | null = null;
     let companyRef = ""; // company_ref is NOT NULL; '' when unmatched (approved)
-    let matchSource: "exact-match" | "alias-cache" | "ai-reasoned" | "unmatched" = "unmatched";
+    let matchSource: "exact-match" | "alias-cache" | "ai-reasoned" | "auto-created" | "unmatched" = "unmatched";
     let confidence = 0;
 
     if (companyName) {
@@ -246,7 +303,7 @@ Deno.serve(async (req) => {
             .sort((x, y) => y.s - x.s).slice(0, 5).map((x) => x.c);
           const ai = await aiMatch(companyName, { firstName, lastName, headline, companyName, companyUrl, location, connectionDegree }, ranked);
           const validPick = ai.matched && ai.company_id ? ranked.find((c) => c.id === ai.company_id) : undefined;
-          if (validPick && ai.confidence >= 85) {
+          if (validPick && ai.confidence >= 75) {
             companyId = validPick.id; companyRef = validPick.company_id ?? ""; matchSource = "ai-reasoned"; confidence = ai.confidence;
             // d) learn the alias (team_id, alias, company_id) — table has no source/confidence cols
             const { error: aliasInsErr } = await supabase
@@ -260,8 +317,66 @@ Deno.serve(async (req) => {
       }
     }
 
+    // ---------- 2b. Auto-create the company when every match tier failed (T3b) ----------
+    // Rationale: Oli's Sales Nav list routinely surfaces companies Pier has never
+    // researched (Coolblue, OFFICE Partner GmbH). Leaving those contacts with
+    // company_id=NULL dead-ends them in the Reconciliation queue with nothing to
+    // assign. We create a stub company instead, flagged needs_review=true so
+    // Reconciliation can confirm / merge / rename it.
+    //
+    // Schema reconciliations vs the Bundle A spec (verified against live schema 2026-08-26):
+    //   - companies.company_id is NOT NULL UNIQUE with no default, so we mint the
+    //     next C### ref ourselves and retry on collision (same pattern as contacts).
+    //   - companies.source_urls is `text`, NOT text[]. The spec passed an array;
+    //     we store the single provenance URL as a plain string.
+    //   - research_stage is NOT NULL DEFAULT 'Untouched'; set explicitly for clarity.
+    //   - website_url is deliberately left NULL: a LinkedIn company page is not a
+    //     website, and the weekly Apify enrichment pass fills this properly.
+    //
+    // Failure here is non-fatal: the contact still gets inserted unmatched, exactly
+    // as it would have before this branch existed.
+    if (matchSource === "unmatched" && companyName) {
+      const inferredCountry = inferCountryFromLocation(location);
+      const companyUrlNorm = normalizeUrl(regularCompanyUrl ?? companyUrl ?? "");
+      try {
+        // deno-lint-ignore no-explicit-any
+        let newCompany: any = null;
+        for (let attempt = 0; attempt < 5; attempt++) {
+          const coId = await nextCompanyId();
+          const { data, error } = await supabase.from("companies").insert({
+            team_id: PIER_TEAM_ID,
+            company_id: coId,
+            company_name: companyName,
+            country: inferredCountry,
+            research_stage: "Untouched",
+            needs_review: true,          // migration 037
+            added_via: "sales_nav_auto", // migration 037
+            source_urls: companyUrlNorm || null,
+          }).select("id, company_id").single();
+          if (!error) { newCompany = data; break; }
+          const collide = error.code === "23505" && `${error.message} ${error.details ?? ""}`.includes("company_id");
+          if (collide) { console.warn(JSON.stringify({ event: "company_id_collision_retry", coId, attempt })); continue; }
+          throw error;
+        }
+        if (!newCompany) throw new Error("company_id_generation_exhausted");
+
+        companyId = newCompany.id;
+        companyRef = newCompany.company_id ?? "";
+        matchSource = "auto-created";
+        confidence = 50; // medium: the name came from Sales Nav, the row is unreviewed
+        console.log(JSON.stringify({ event: "auto_created_company", company_id: companyId, company_ref: companyRef, company_name: companyName, inferred_country: inferredCountry }));
+      } catch (e) {
+        // Continue unmatched rather than failing the contact insert.
+        console.error(JSON.stringify({ event: "auto_create_company_failed", message: (e as Error).message ?? String(e), companyName }));
+      }
+    }
+
     // ---------- 3. Insert new contact (retry on contact_id collision) ----------
-    const connectionStatus = connectionDegree === "1st degree" ? "Already connected" : "Not connected";
+    // T1b: by the time a lead lands in Oli's Sales Nav list he has already sent the
+    // connection request, so "Request sent" is the correct initial state, not
+    // "Not connected". Connection Watcher flips this to "Accepted" on acceptance.
+    // Applies to NEW ingest only - existing contacts are not retro-changed.
+    const connectionStatus = connectionDegree === "1st degree" ? "Already connected" : "Request sent";
     const baseRow = {
       team_id: PIER_TEAM_ID,
       company_ref: companyRef,          // NOT NULL; '' when unmatched (approved)
