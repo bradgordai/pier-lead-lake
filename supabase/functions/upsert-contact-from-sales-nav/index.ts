@@ -376,7 +376,13 @@ Deno.serve(async (req) => {
     // connection request, so "Request sent" is the correct initial state, not
     // "Not connected". Connection Watcher flips this to "Accepted" on acceptance.
     // Applies to NEW ingest only - existing contacts are not retro-changed.
-    const connectionStatus = connectionDegree === "1st degree" ? "Already connected" : "Request sent";
+    //
+    // The strict `=== "1st degree"` test this replaces never fired: the Sales Nav
+    // List Export phantom emits degree as "1st" / "2nd" / "3rd" (verified against
+    // the live Make bundle 2026-08-26), so every 1st-degree lead was silently
+    // classed as not-connected. isFirstDegree tolerates both spellings.
+    const isFirstDegree = /^1(st)?(\s+degree)?$/i.test(connectionDegree.trim());
+    const connectionStatus = isFirstDegree ? "Already connected" : "Request sent";
     const baseRow = {
       team_id: PIER_TEAM_ID,
       company_ref: companyRef,          // NOT NULL; '' when unmatched (approved)
