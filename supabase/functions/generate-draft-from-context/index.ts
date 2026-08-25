@@ -65,10 +65,28 @@ Deno.serve(async (req) => {
 
   try {
     const { data: contact, error: cErr } = await supabase.from("contacts")
-      .select("id, first_name, last_name, job_title, seniority, function, location, linkedin_url, company_id, connection_status")
+      .select("id, contact_id, first_name, last_name, job_title, seniority, function, location, linkedin_url, company_id, connection_status")
       .eq("team_id", PIER_TEAM_ID).eq("id", contactId).maybeSingle();
     if (cErr) throw cErr;
     if (!contact) return json(404, { error: "contact_not_found" });
+
+    // Dedup guard: if an agent-produced pending_review draft already exists for this
+    // contact + channel + touch_type, do not create a duplicate. Every 4h Connection
+    // Watcher run would otherwise blindly create a new draft on unchanged acceptance.
+    const { data: existingDraft } = await supabase.from("outreach_log")
+      .select("id, touch_id, created_at")
+      .eq("team_id", PIER_TEAM_ID)
+      .eq("contact_id", contact.id)
+      .eq("channel", "LinkedIn DM")
+      .eq("touch_type", "Initial message")
+      .eq("draft_status", "pending_review")
+      .eq("agent_produced", true)
+      .limit(1)
+      .maybeSingle();
+    if (existingDraft) {
+      console.log(JSON.stringify({ event: "dedup_skipped", contact_id: contact.id, existing_touch_id: existingDraft.id, existing_created_at: existingDraft.created_at }));
+      return json(200, { status: "dedup_skipped", existing_touch_id: existingDraft.id, message: "Draft already exists in Pending Review, not creating duplicate" });
+    }
 
     // deno-lint-ignore no-explicit-any
     let company: any = null;
@@ -172,7 +190,7 @@ Deno.serve(async (req) => {
 
     const today = new Date().toISOString().slice(0, 10);
     const insertRow = {
-      team_id: PIER_TEAM_ID, touch_id: `agent-${crypto.randomUUID()}`, contact_id: contact.id, company_id: contact.company_id ?? null,
+      team_id: PIER_TEAM_ID, touch_id: `agent-${crypto.randomUUID()}`, contact_ref: contact.contact_id ?? null, contact_id: contact.id, company_id: contact.company_id ?? null,
       channel: "LinkedIn DM", touch_type: "Initial message", message_body: messageBody, subject_line: null,
       draft_status: "pending_review", send_status: "Draft", agent_produced: true,
       pre_lint_pass: lint.pass, voice_contract_violations: lint.violations, lint_score: lint.score,
