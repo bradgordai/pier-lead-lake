@@ -2,7 +2,8 @@
 //
 // Called by Make.com after the Sales Nav "List Export" phantom fires, once per lead.
 // Flow: verify shared secret -> dedupe (canonical linkedin_slug first, then URL) ->
-// resolve company (exact -> alias cache -> AI fuzzy match) -> insert contact.
+// resolve company (exact -> alias cache -> AI fuzzy match) -> insert contact ->
+// best-effort chain enrich-contact-metadata (function/seniority/language) for new rows.
 //
 // URL handling (migration 031): the Sales Nav phantom's `profileUrl` is the internal
 // /sales/lead/ACw... format, which never matches the public /in/{slug} URL the
@@ -290,6 +291,20 @@ Deno.serve(async (req) => {
       throw error;
     }
     if (!inserted) throw new Error("contact_id_generation_exhausted");
+
+    // Best-effort: chain metadata enrichment (function/seniority/language) for the new
+    // contact. New rows are inserted with those fields NULL. The insert is the primary
+    // success; enrichment never fails the ingest and can be re-run via the backfill mode.
+    try {
+      const enrichResp = await fetch(`${SUPABASE_URL}/functions/v1/enrich-contact-metadata`, {
+        method: "POST",
+        headers: { authorization: `Bearer ${MAKE_SHARED_SECRET}`, "content-type": "application/json" },
+        body: JSON.stringify({ contact_id: inserted.id }),
+      });
+      console.log(JSON.stringify({ event: "enrich_triggered", http: enrichResp.status }));
+    } catch (e) {
+      console.error(JSON.stringify({ event: "enrich_trigger_failed", message: (e as Error).message ?? String(e) }));
+    }
 
     console.log(JSON.stringify({ event: "created", contact_id: inserted.id, biz_id: bizId, company_id: companyId, source: matchSource, confidence, slug }));
     return json(200, {
