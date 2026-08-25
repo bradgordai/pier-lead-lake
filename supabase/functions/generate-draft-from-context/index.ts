@@ -115,8 +115,6 @@ Deno.serve(async (req) => {
       const olderNote = older.length ? `(plus ${older.length} earlier message(s) before ${cutoff}, omitted as stale - do not repeat those openers)\n` : "";
       threadText = olderNote + recent.map(renderMsg).join("\n");
     }
-    // Diagnostic: the exact prior-thread string handed to the model (attribution check).
-    console.log(JSON.stringify({ event: "thread_context", contact_id: contactId, recent: recent.length, older: older.length, thread_preview: threadText.slice(0, 900) }));
 
     let systemPrompt = "";
     try {
