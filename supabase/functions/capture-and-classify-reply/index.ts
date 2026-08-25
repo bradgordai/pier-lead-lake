@@ -142,26 +142,37 @@ Deno.serve(async (req) => {
   try { console.log(JSON.stringify({ event: "inbox_message_shape", keys: Object.keys(body ?? {}) })); } catch { /* noop */ }
 
   // Tolerant field extraction (spec: handle common alternates gracefully).
-  const senderProfileUrl = pick(body, ["senderProfileUrl", "profileUrl", "senderUrl", "publicProfileUrl", "senderProfile", "authorProfileUrl"]);
+  // PB LinkedIn Inbox Scraper native field names appended to each alternates list (2026-08-25).
+  const senderProfileUrl = pick(body, ["senderProfileUrl", "profileUrl", "senderUrl", "publicProfileUrl", "senderProfile", "authorProfileUrl", "lastMessageFromUrl"]);
   const messageBody = pick(body, ["messageBody", "message", "text", "messageText", "snippet", "body"]);
-  const messageDateRaw = pick(body, ["messageDate", "timestamp", "date", "messageDateTime", "time", "sentAt"]);
+  const messageDateRaw = pick(body, ["messageDate", "timestamp", "date", "messageDateTime", "time", "sentAt", "lastMessageDate"]);
   const threadIdRaw = pick(body, ["threadId", "thread", "threadUrl", "conversationUrl", "conversationId"]);
   const directionRaw = pick(body, ["direction", "messageDirection", "type"]).toLowerCase();
-  const senderFirstName = pick(body, ["senderFirstName", "firstName", "fromFirstName"]);
-  const senderLastName = pick(body, ["senderLastName", "lastName", "fromLastName"]);
+  const senderFirstName = pick(body, ["senderFirstName", "firstName", "fromFirstName", "firstnameFrom"]);
+  const senderLastName = pick(body, ["senderLastName", "lastName", "fromLastName", "lastnameFrom"]);
 
   if (!senderProfileUrl || !messageBody) {
     return json(400, { error: "missing_required_fields", detail: "senderProfileUrl and messageBody are required" });
   }
 
-  const slug = extractSlug(senderProfileUrl);
+  // PB sometimes returns lastMessageFromUrl as a non-public URL; fall back to the
+  // linkedInUrls array and try each until a slug parses.
+  let slug = extractSlug(senderProfileUrl);
+  if (!slug && Array.isArray(body?.linkedInUrls)) {
+    for (const u of body.linkedInUrls) {
+      const s = extractSlug(typeof u === "string" ? u : "");
+      if (s) { slug = s; break; }
+    }
+  }
   const slugLower = slug ? slug.toLowerCase() : "";
 
   // Filter to inbound only. Skip clear outbound directions or Oli's own slug.
   const OUTBOUND = new Set(["sent", "outbound", "out", "outgoing", "from_me", "self"]);
   const isOwn = !!OLI_LINKEDIN_SLUG && slugLower === OLI_LINKEDIN_SLUG;
-  if (isOwn || OUTBOUND.has(directionRaw)) {
-    console.log(JSON.stringify({ event: "skipped", reason: "outbound_or_own", direction: directionRaw, is_own: isOwn }));
+  // PB Inbox Scraper marks Oli's own outbound messages with isLastMessageFromMe.
+  const isFromMeBool = body?.isLastMessageFromMe === true || String(body?.isLastMessageFromMe).toLowerCase() === "true";
+  if (isOwn || OUTBOUND.has(directionRaw) || isFromMeBool) {
+    console.log(JSON.stringify({ event: "skipped", reason: "outbound_or_own", direction: directionRaw, is_own: isOwn, is_from_me_bool: isFromMeBool }));
     return json(200, { status: "skipped", reason: "outbound_or_own" });
   }
 
