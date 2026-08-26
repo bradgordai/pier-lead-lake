@@ -74,6 +74,29 @@ Deno.serve(async (req) => {
 
   const orows = outreach ?? [];
   const replies = orows.filter((r) => r.touch_type === "Reply");
+
+  // FIX 6a: the briefing used to report bare counts ("2 messages sent"), which reads as
+  // unexplained activity - Oli cannot tell WHO was touched or jump to them. Resolve the
+  // contacts behind yesterday's touches so the model can name them and the UI can link.
+  const touchedIds = Array.from(new Set(orows.map((r) => r.contact_id).filter(Boolean))) as string[];
+  // deno-lint-ignore no-explicit-any
+  let peopleById = new Map<string, any>();
+  if (touchedIds.length) {
+    const { data: people } = await supabase.from("contacts")
+      .select("id, contact_id, first_name, last_name")
+      .eq("team_id", PIER_TEAM_ID).in("id", touchedIds);
+    peopleById = new Map(((people ?? []) as Array<{ id: string }>).map((p) => [p.id, p]));
+  }
+  const activity_by_person = touchedIds.map((id) => {
+    const p = peopleById.get(id);
+    const mine = orows.filter((r) => r.contact_id === id);
+    return {
+      contact_id: id,
+      contact_ref: p?.contact_id ?? null,
+      name: p ? `${p.first_name ?? ""} ${p.last_name ?? ""}`.trim() : "(unknown contact)",
+      touches: mine.map((r) => ({ touch_type: r.touch_type, channel: r.channel, send_status: r.send_status })),
+    };
+  });
   const facts = {
     date: dateStr,
     outreach_activity: {
@@ -95,6 +118,8 @@ Deno.serve(async (req) => {
       by_action: tally(audit ?? [], (r) => r.action),
     },
     drafts_waiting: { pending_review_now: (pending as any) ? (pending as any).length : 0 },
+    // Who was actually touched. Every name the briefing mentions must come from here.
+    activity_by_person,
   };
   // count is on the response object, not the data array — re-read via count query result
   const { count: pendingCount } = await supabase.from("outreach_log")
@@ -105,8 +130,22 @@ Deno.serve(async (req) => {
   // ---- Sonnet ----
   const system = `You are the assistant for Oli, who runs B2B outreach for Pier (embedded gadget insurance) in a bespoke CRM. Write a crisp "Yesterday's Work" briefing from the activity facts. British English, plain and specific, no hype, no emoji. If a metric is zero, say so briefly rather than inventing activity.
 
+NAME PEOPLE. Never write a bare count like "2 messages sent" - Oli cannot act on a number.
+Whenever activity involves specific contacts, name them from activity_by_person, e.g.
+"2 connection requests recorded, Marco Stiemert and Hermann-Wilhelm Wantia". If more than
+four people are involved, name the first three and add "and N others". Use only names that
+appear in activity_by_person; never invent one.
+
+IMPORTANT CONTEXT ABOUT CONNECTION REQUESTS: touches with touch_type "Connection request"
+include historical CRs being backfilled into the funnel, not only new sends made yesterday.
+Do not describe them as if Oli sent them yesterday. Say they were "recorded" or "logged"
+rather than "sent", and if CRs are the bulk of the activity, note plainly that these are
+backfilled historical records.
+
 Return ONLY valid minified JSON (no markdown), exactly this shape:
-{"date":"YYYY-MM-DD","headline":"<=90 chars, the single most important thing about yesterday","sections":{"outreach_activity":"1-2 sentences","replies_and_conversations":"1-2 sentences","contact_changes":"1-2 sentences","drafts_waiting":"1-2 sentences","priority_signals":"2-3 sentences on what deserves Oli's attention today"},"priority_flags":["short actionable flag", "..."],"queue_recommendations":["short next-step recommendation", "..."]}
+{"date":"YYYY-MM-DD","headline":"<=90 chars, the single most important thing about yesterday","sections":{"outreach_activity":"1-2 sentences","replies_and_conversations":"1-2 sentences","contact_changes":"1-2 sentences","drafts_waiting":"1-2 sentences","priority_signals":"2-3 sentences on what deserves Oli's attention today"},"priority_flags":["short actionable flag", "..."],"queue_recommendations":["short next-step recommendation", "..."],"people":[{"id":"<contact_id uuid from activity_by_person>","name":"<their name>"}]}
+"people" must list every contact you named anywhere in the briefing, with the exact uuid from
+activity_by_person, so the UI can turn each mention into a link. Empty array if you named none.
 Total prose across all sections 250-350 words. priority_flags and queue_recommendations: 0-4 items each, terse and specific. Base everything strictly on the facts provided.`;
 
   const resp = await fetch("https://api.anthropic.com/v1/messages", {
