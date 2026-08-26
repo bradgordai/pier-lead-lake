@@ -43,6 +43,46 @@ const WORST_CASE = { in: 10, out: 50 };
 
 const USD_TO_GBP = 0.79; // update alongside the rates above
 
+// ---------------------------------------------------------------------------
+// FAIL-CLOSED DAILY BUDGET (security audit finding F-10).
+//
+// The first cut of this helper logged cost but never blocked, so it failed OPEN: a runaway
+// loop or a leaked shared secret could spend without limit. The budget is now checked
+// BEFORE the Anthropic call and throws when today's spend is already at the ceiling.
+//
+// Default £10/day, overridable with ANTHROPIC_DAILY_BUDGET_GBP. Set it to 0 to disable the
+// gate entirely (not recommended).
+//
+// One deliberate exception: if the budget QUERY itself errors, we log loudly and allow the
+// call. This is a cost guard, not a security control, and a transient DB blip should not
+// take the whole outreach pipeline down. A sustained failure shows up as repeated
+// `sentinel_budget_check_failed` lines.
+// ---------------------------------------------------------------------------
+const DAILY_BUDGET_GBP = Number(Deno.env.get("ANTHROPIC_DAILY_BUDGET_GBP") ?? "10");
+
+export class BudgetExceededError extends Error {
+  constructor(public spentGbp: number, public limitGbp: number) {
+    super(`anthropic_daily_budget_exceeded: spent GBP ${spentGbp.toFixed(2)} of ${limitGbp.toFixed(2)} today`);
+    this.name = "BudgetExceededError";
+  }
+}
+
+/** Today's total spend in GBP from api_call_log. Throws only if the caller wants it to. */
+// deno-lint-ignore no-explicit-any
+export async function todaySpendGbp(supabase: any): Promise<number> {
+  const today = new Date().toISOString().slice(0, 10);
+  const { data, error } = await supabase
+    .from("api_call_log")
+    .select("estimated_cost_gbp")
+    .gte("created_at", `${today}T00:00:00Z`);
+  if (error) throw error;
+  let total = 0;
+  for (const r of (data ?? []) as Array<{ estimated_cost_gbp: number | string }>) {
+    total += Number(r.estimated_cost_gbp ?? 0);
+  }
+  return total;
+}
+
 export function estimateCostGbp(
   model: string,
   inputTokens: number,
@@ -103,6 +143,38 @@ export async function callAnthropicWithSentinel(params: {
   }
   if (max_tokens > 2000) {
     console.warn(JSON.stringify({ event: "sentinel_high_max_tokens", function_name, max_tokens }));
+  }
+
+  // --- Fail-closed budget gate, BEFORE any spend ---
+  if (DAILY_BUDGET_GBP > 0) {
+    try {
+      const spent = await todaySpendGbp(supabase);
+      if (spent >= DAILY_BUDGET_GBP) {
+        console.error(JSON.stringify({
+          event: "sentinel_budget_exceeded", function_name, model,
+          spent_gbp: Number(spent.toFixed(4)), limit_gbp: DAILY_BUDGET_GBP,
+        }));
+        // Record the refusal so the digest shows blocked attempts, not silence.
+        try {
+          await supabase.from("api_call_log").insert({
+            team_id, function_name, model,
+            input_tokens: 0, output_tokens: 0, cache_creation_tokens: 0, cache_read_tokens: 0,
+            thinking_tokens: 0, estimated_cost_gbp: 0,
+            request_context: { ...(request_context ?? {}), blocked_by: "daily_budget" },
+            succeeded: false,
+            error_message: `blocked: daily budget GBP ${DAILY_BUDGET_GBP} reached (spent ${spent.toFixed(4)})`,
+          });
+        } catch { /* logging must never mask the block */ }
+        throw new BudgetExceededError(spent, DAILY_BUDGET_GBP);
+      }
+    } catch (e) {
+      if (e instanceof BudgetExceededError) throw e;
+      // Budget check itself failed - allow the call, but make it loud.
+      console.error(JSON.stringify({
+        event: "sentinel_budget_check_failed", function_name,
+        message: (e as Error).message ?? String(e),
+      }));
+    }
   }
 
   // deno-lint-ignore no-explicit-any

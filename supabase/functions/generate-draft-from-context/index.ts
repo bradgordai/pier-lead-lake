@@ -1,8 +1,9 @@
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.45.4";
+import { authorize } from "./_shared/authorize.ts";
+import { callAnthropicWithSentinel, BudgetExceededError } from "./_shared/anthropic-sentinel.ts";
 
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL") ?? "";
 const SERVICE_ROLE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") ?? "";
-const MAKE_SHARED_SECRET = Deno.env.get("MAKE_SHARED_SECRET") ?? "";
 const PIER_TEAM_ID = Deno.env.get("PIER_TEAM_ID") ?? "";
 const ANTHROPIC_API_KEY = Deno.env.get("ANTHROPIC_API_KEY") ?? "";
 const ANTHROPIC_MODEL = "claude-sonnet-5";
@@ -57,9 +58,8 @@ function preLint(message: string): { score: number; pass: boolean; violations: u
 
 Deno.serve(async (req) => {
   if (req.method !== "POST") return json(405, { error: "method_not_allowed" });
-  if (!MAKE_SHARED_SECRET || !PIER_TEAM_ID) return json(500, { error: "server_misconfigured" });
-  const authz = req.headers.get("authorization") ?? "";
-  if ((authz.startsWith("Bearer ") ? authz.slice(7) : "") !== MAKE_SHARED_SECRET) return json(401, { error: "unauthorized" });
+  if (!PIER_TEAM_ID) return json(500, { error: "server_misconfigured" });
+  if (!authorize(req, "internal", "generate-draft-from-context")) return json(401, { error: "unauthorized" });
 
   // deno-lint-ignore no-explicit-any
   let body: any;
@@ -198,21 +198,29 @@ Deno.serve(async (req) => {
     let genError = "";
     try {
       if (!ANTHROPIC_API_KEY) throw new Error("ANTHROPIC_API_KEY missing");
-      const resp = await fetch("https://api.anthropic.com/v1/messages", {
-        method: "POST",
-        headers: { "x-api-key": ANTHROPIC_API_KEY, "anthropic-version": "2023-06-01", "content-type": "application/json" },
-        // claude-sonnet-5 rejects `temperature` (deprecated) and runs extended thinking by default,
-        // which eats the whole max_tokens budget before emitting a message. A short DM needs no
-        // reasoning, so thinking is disabled and max_tokens kept modest.
-        body: JSON.stringify({ model: ANTHROPIC_MODEL, max_tokens: 1024, thinking: { type: "disabled" }, system: systemPrompt, messages: [{ role: "user", content: userPrompt }] }),
+      // Routed through the sentinel: logs cost per call to api_call_log and refuses once
+      // today's spend hits the daily budget (fail-closed, security audit F-10).
+      const result = await callAnthropicWithSentinel({
+        model: ANTHROPIC_MODEL,
+        max_tokens: 1024,
+        thinking: { type: "disabled" },
+        system: systemPrompt,
+        messages: [{ role: "user", content: userPrompt }],
+        function_name: "generate-draft-from-context",
+        team_id: PIER_TEAM_ID,
+        request_context: { contact_id: contact.id, trigger_reason: triggerReason, touch_type: mapped.touch_type, purpose: "draft_generation" },
+        supabase,
+        anthropic_api_key: ANTHROPIC_API_KEY,
       });
-      const data = await resp.json();
-      if (!resp.ok) { genError = `http_${resp.status}: ${JSON.stringify(data).slice(0, 400)}`; throw new Error("anthropic_http_" + resp.status); }
-      const text = ((data?.content ?? []) as Array<{ type: string; text?: string }>).filter((b) => b.type === "text").map((b) => b.text ?? "").join("").trim();
-      messageBody = text.replace(/^```[a-z]*\s*/i, "").replace(/```$/i, "").trim();
-      if (!messageBody) { genError = `empty: stop=${data?.stop_reason ?? ""} types=${JSON.stringify(((data?.content ?? []) as Array<{ type: string }>).map((b) => b.type))}`; throw new Error("empty_generation"); }
-      console.log(JSON.stringify({ event: "anthropic_ok", usage: data?.usage, preview: messageBody.slice(0, 120) }));
+      messageBody = result.content.replace(/^```[a-z]*\s*/i, "").replace(/```$/i, "").trim();
+      if (!messageBody) { genError = "empty_generation"; throw new Error("empty_generation"); }
     } catch (e) {
+      // Budget block is NOT a generation failure: return without writing a placeholder
+      // draft, so a blocked day does not fill Pending Review with junk rows to clean up.
+      if (e instanceof BudgetExceededError) {
+        console.error(JSON.stringify({ event: "draft_blocked_by_budget", contact_id: contact.id, message: e.message }));
+        return json(200, { status: "budget_exceeded", detail: e.message, contact_id: contact.id });
+      }
       generationFailed = true;
       if (!genError) genError = (e as Error).message ?? String(e);
       console.error(JSON.stringify({ event: "generation_failed", message: genError, system_len: systemPrompt.length }));
