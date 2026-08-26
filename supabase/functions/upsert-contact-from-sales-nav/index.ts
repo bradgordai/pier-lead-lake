@@ -23,10 +23,14 @@
 //     treated as an unmatched company.
 
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.45.4";
+import { authorize } from "./_shared/authorize.ts";
+import { callAnthropicWithSentinel } from "./_shared/anthropic-sentinel.ts";
 
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL") ?? "";
 const SERVICE_ROLE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") ?? "";
-const MAKE_SHARED_SECRET = Deno.env.get("MAKE_SHARED_SECRET") ?? "";
+// Bearer used for the OUTBOUND chained call to enrich-contact-metadata. Prefers the
+// scoped internal secret once it exists, falls back to the legacy one during transition.
+const OUTBOUND_SECRET = Deno.env.get("INTERNAL_APP_SECRET") || Deno.env.get("MAKE_SHARED_SECRET") || "";
 const PIER_TEAM_ID = Deno.env.get("PIER_TEAM_ID") ?? "";
 const ANTHROPIC_API_KEY = Deno.env.get("ANTHROPIC_API_KEY") ?? "";
 const ANTHROPIC_MODEL = "claude-sonnet-5";
@@ -133,22 +137,22 @@ async function aiMatch(companyName: string, contact: any, candidates: Company[])
   if (!ANTHROPIC_API_KEY) { console.error(JSON.stringify({ event: "anthropic_skip", reason: "ANTHROPIC_API_KEY missing" })); return fallback; }
   const candJson = candidates.map((c) => ({ company_id: c.id, name: c.company_name, country: c.country, industry: c.industry }));
   try {
-    const resp = await fetch("https://api.anthropic.com/v1/messages", {
-      method: "POST",
-      headers: { "x-api-key": ANTHROPIC_API_KEY, "anthropic-version": "2023-06-01", "content-type": "application/json" },
-      body: JSON.stringify({
-        model: ANTHROPIC_MODEL,
-        max_tokens: 500,
-        system:
-          "You match LinkedIn contacts to companies. Given candidates + contact context, return ONLY JSON: {matched: bool, company_id: uuid or null, confidence: 0-100, reasoning: string}. Reason about country + industry + name similarity.",
-        messages: [{ role: "user", content: JSON.stringify({ candidates: candJson, contact }) }],
-      }),
+    // Routed through the sentinel: per-call cost logging + fail-closed daily budget.
+    // A BudgetExceededError is caught below and degrades to `fallback` (unmatched), which
+    // simply hands the lead to the auto-create path - no spend, no lost contact.
+    const result = await callAnthropicWithSentinel({
+      model: ANTHROPIC_MODEL,
+      max_tokens: 500,
+      system:
+        "You match LinkedIn contacts to companies. Given candidates + contact context, return ONLY JSON: {matched: bool, company_id: uuid or null, confidence: 0-100, reasoning: string}. Reason about country + industry + name similarity.",
+      messages: [{ role: "user", content: JSON.stringify({ candidates: candJson, contact }) }],
+      function_name: "upsert-contact-from-sales-nav",
+      team_id: PIER_TEAM_ID,
+      request_context: { purpose: "company_match", input_company: companyName, candidates: candidates.length },
+      supabase,
+      anthropic_api_key: ANTHROPIC_API_KEY,
     });
-    const data = await resp.json();
-    if (!resp.ok) { console.error(JSON.stringify({ event: "anthropic_http_error", status: resp.status, body: JSON.stringify(data).slice(0, 300) })); return fallback; }
-    const text = ((data?.content ?? []) as Array<{ type: string; text?: string }>)
-      .filter((b) => b.type === "text").map((b) => b.text ?? "").join("").trim();
-    console.log(JSON.stringify({ event: "anthropic_ok", status: resp.status, model: ANTHROPIC_MODEL, usage: data?.usage, raw: text.slice(0, 300) }));
+    const text = result.content;
     const cleaned = text.replace(/^```json\s*/i, "").replace(/^```\s*/i, "").replace(/```$/i, "").trim();
     const parsed = JSON.parse(cleaned);
     const conf = Math.max(0, Math.min(100, Number(parsed?.confidence) || 0));
@@ -177,13 +181,11 @@ Deno.serve(async (req) => {
   if (req.method !== "POST") return json(405, { error: "method_not_allowed" });
 
   // Config presence (also serves as a secret-wiring check).
-  if (!MAKE_SHARED_SECRET) return json(500, { error: "server_misconfigured", detail: "MAKE_SHARED_SECRET not set" });
   if (!PIER_TEAM_ID) return json(500, { error: "server_misconfigured", detail: "PIER_TEAM_ID not set" });
 
-  // Shared-secret auth.
-  const authz = req.headers.get("authorization") ?? "";
-  const token = authz.startsWith("Bearer ") ? authz.slice(7) : "";
-  if (token !== MAKE_SHARED_SECRET) return json(401, { error: "unauthorized" });
+  // Scoped-secret auth (security audit CRITICAL 2). Caller class "inbound": this endpoint
+  // is called by the Make Sales Nav Watcher webhook.
+  if (!authorize(req, "inbound", "upsert-contact-from-sales-nav")) return json(401, { error: "unauthorized" });
 
   // Secret-gated health check for the Anthropic connection. Returns only the HTTP
   // status + Anthropic's own (key-free) response body — never the API key itself.
@@ -460,7 +462,7 @@ Deno.serve(async (req) => {
       try {
         const enrichResp = await fetch(`${SUPABASE_URL}/functions/v1/enrich-contact-metadata`, {
           method: "POST",
-          headers: { authorization: `Bearer ${MAKE_SHARED_SECRET}`, "content-type": "application/json" },
+          headers: { authorization: `Bearer ${OUTBOUND_SECRET}`, "content-type": "application/json" },
           body: JSON.stringify({ contact_id: inserted.id }),
         });
         console.log(JSON.stringify({ event: "enrich_triggered", http: enrichResp.status }));
