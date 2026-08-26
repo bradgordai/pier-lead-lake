@@ -4,8 +4,9 @@
 // from 'Scheduled' to its terminal state. Wired as the phantom's completion webhook
 // (Option B in the spec: phantom -> Edge Function directly, no Make hop).
 //
-// Auth (Brad's decision 2026-08-26): reuses MAKE_SHARED_SECRET, not a separate
-// SEND_APPROVED_SECRET.
+// Auth: scoped bearer via ./_shared/authorize.ts, caller class "inbound" (PhantomBuster
+// webhook). Accepts INBOUND_WEBHOOK_SECRET, and MAKE_SHARED_SECRET during the transition
+// with a deprecation warning. Security audit CRITICAL 2.
 //
 // PhantomBuster's completion payload shape varies by script and is not contractually
 // stable, so the run id is picked out of several plausible keys and the success/failure
@@ -14,10 +15,10 @@
 // marking it 'Cancelled' (a Cancelled row gets reviewed; a Sent one does not).
 
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.45.4";
+import { authorize } from "./_shared/authorize.ts";
 
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL") ?? "";
 const SERVICE_ROLE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") ?? "";
-const MAKE_SHARED_SECRET = Deno.env.get("MAKE_SHARED_SECRET") ?? "";
 const PIER_TEAM_ID = Deno.env.get("PIER_TEAM_ID") ?? "";
 
 const supabase = createClient(SUPABASE_URL, SERVICE_ROLE_KEY, { auth: { persistSession: false, autoRefreshToken: false } });
@@ -37,11 +38,9 @@ function pick(o: any, keys: string[]): string {
 
 Deno.serve(async (req) => {
   if (req.method !== "POST") return json(405, { error: "method_not_allowed" });
-  if (!MAKE_SHARED_SECRET) return json(500, { error: "server_misconfigured", detail: "MAKE_SHARED_SECRET not set" });
   if (!PIER_TEAM_ID) return json(500, { error: "server_misconfigured", detail: "PIER_TEAM_ID not set" });
 
-  const authz = req.headers.get("authorization") ?? "";
-  if ((authz.startsWith("Bearer ") ? authz.slice(7) : "") !== MAKE_SHARED_SECRET) return json(401, { error: "unauthorized" });
+  if (!authorize(req, "inbound", "send-approved-callback")) return json(401, { error: "unauthorized" });
 
   // deno-lint-ignore no-explicit-any
   let body: any;
