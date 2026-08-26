@@ -413,6 +413,45 @@ Deno.serve(async (req) => {
     }
     if (!inserted) throw new Error("contact_id_generation_exhausted");
 
+    // Log the CR itself to outreach_log so the Weekly CRs widget and the channel funnels
+    // reflect real activity. Rule: connection_status 'Request sent' means Oli sent a CR to
+    // reach this lead. A 1st-degree contact ('Already connected') needed no CR, so nothing
+    // is logged for them.
+    //
+    // Schema reconciliations vs the log-CR spec (verified 2026-08-26):
+    //   - draft_status is NOT NULL DEFAULT 'pending_review'; the spec passed NULL, which
+    //     would violate the constraint. Set to 'sent' rather than taking the default:
+    //     this CR has already gone out, so it is not awaiting review, and leaving it at
+    //     'pending_review' would drop every new CR into Oli's Pending Review queue (the
+    //     "Connection requests" section) as though it needed action.
+    //   - sent_by is plain text, not the account_owner enum, so the literal is fine.
+    if (connectionStatus === "Request sent") {
+      const crToday = new Date().toISOString().slice(0, 10);
+      const { error: crLogErr } = await supabase.from("outreach_log").insert({
+        team_id: PIER_TEAM_ID,
+        contact_id: inserted.id,
+        contact_ref: bizId,
+        company_id: companyId,
+        channel: "LinkedIn CR",
+        touch_type: "Connection request",
+        touch_date: crToday,
+        send_status: "Sent",
+        draft_status: "sent",
+        agent_produced: false,
+        migrated_legacy: false,
+        sent_by: "Oliver M\u00fcller",
+        message_body: null,
+        subject_line: null,
+        touch_id: `cr-${crypto.randomUUID()}`,
+      });
+      if (crLogErr) {
+        // Non-fatal: the contact insert already succeeded, only the log row failed.
+        console.error(JSON.stringify({ event: "cr_log_failed", contact_id: inserted.id, message: crLogErr.message }));
+      } else {
+        console.log(JSON.stringify({ event: "cr_logged", contact_id: inserted.id, biz_id: bizId }));
+      }
+    }
+
     // Best-effort, non-blocking metadata enrichment (function/seniority/language) for the
     // new contact. New rows are inserted with those fields NULL. EdgeRuntime.waitUntil keeps
     // the worker alive until it settles WITHOUT blocking the ingest response, so Make gets
