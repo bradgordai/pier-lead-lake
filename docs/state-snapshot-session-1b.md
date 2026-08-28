@@ -19,7 +19,7 @@ and restored in the same sequence.
 | T3b insight `note` | ✅ done + verified | EF v12; stored jsonb read back |
 | T1b sender hardening | ✅ done + verified | EF v22; 3 live drafts inc. a regression case |
 | T5 Ask bar — Edge Function | ✅ done + verified | new EF v1; 6 queries + auth negative |
-| T5 Ask bar — UI | ⏳ building | Lovable `umsg_01m14n8ffwfc5vh2w2nhfvhq53` |
+| T5 Ask bar — UI | ✅ built + deployed, not visually verified | commits `2c3ecb9`, `6cc1766` |
 | T6 magic link | ✅ verified | login page renders unauthenticated |
 | T2 / T3-UI / T4 | ⚠️ code-verified, **not** visually verified | see below |
 
@@ -47,6 +47,39 @@ column actually stay put, does the note actually render) - the logic is confirme
 
 **Brad: log in once and check three things.** /companies scrolled fully right; Today's
 pending-drafts number equals Outreach Pending Review; the note under Yesterday's Work.
+
+## T5 Ask bar
+
+Edge Function `parse-companies-query` v1, Haiku 4.5, INTERNAL_APP_SECRET, sentinel-wrapped.
+782 in / 38 out, **£0.00077 a query** - about 1,300 queries per pound.
+
+Output is ChipFilters, the shape the table already uses, so the reply drops straight into
+`setChips()` with no translation layer to drift. Every key and value the model returns is
+re-checked server-side against the vocabulary before it is handed back; anything unrecognised
+goes to `unmatched` rather than being applied. Country is loaded live from the table so newly
+ingested markets are filterable.
+
+Verified against the deployed function:
+
+| Query | Result |
+|---|---|
+| `P1 companies in Germany` | priority P1 + country Germany (12 real rows) |
+| `untouched P0 or P1 refurb specialists in France or Spain` | 4 keys, OR within, AND across |
+| `big enterprise retailers that already offer insurance` | `__size_tier__` + `__insurance_state__` + category |
+| `P0 DACH refurbished specialists` | DACH expanded to Germany/Austria/Switzerland |
+| `companies with revenue over 50 million` | unparsed, phrase surfaced |
+| `purple bananas` | unparsed |
+| no bearer | 401 |
+
+The UI replaces chips rather than merging (a new question is a new question), pushes
+non-primary keys into `extraKeys` so an applied filter is never invisible, leaves filters
+untouched on an unparsed result, and shows partial matches as applied-filters-plus-a-quiet-
+note rather than silently honouring half a question.
+
+**The original placeholder advertised a query the parser cannot do** - "monthly visits over
+100000" - so the first thing Oli typed would have half-failed. Replaced with an example that
+fully resolves. The dead `nlToFilterFn` mock, which silently returned empty filters, was
+removed so there is one nl-to-filter path.
 
 ## Tier 2 flags
 
@@ -92,6 +125,11 @@ them and is also still calling Anthropic directly rather than through the sentin
 Sonnet spend is invisible to the budget gate. `MAKE_SHARED_SECRET` cannot be retired until
 all five are cut over and the logs show zero `deprecated_secret_used`.
 
-**9. Carried forward:** F-13 EA-doc prompt caching (~87% off the £0.0928 per-draft cost);
+**9. Ask bar leaves empty chips behind.** Keys added to `extraKeys` by an earlier Ask stay
+visible as zero-selection dropdowns after a later Ask replaces the chip set. Cosmetic only.
+Deliberately not fixed: distinguishing an Ask-added extra from a manually added one needs
+extra state, which is not worth it for an empty dropdown.
+
+**10. Carried forward:** F-13 EA-doc prompt caching (~87% off the £0.0928 per-draft cost);
 `connection_status` has no `'Not sent'` label (B9 uses `'Not connected'`); `archive_reason`
 is text not an enum.
