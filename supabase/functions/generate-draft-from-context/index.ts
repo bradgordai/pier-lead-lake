@@ -14,19 +14,55 @@ const supabase = createClient(SUPABASE_URL, SERVICE_ROLE_KEY, { auth: { persistS
 const json = (s: number, b: any) => new Response(JSON.stringify(b), { status: s, headers: { "content-type": "application/json" } });
 
 const EA_ORDER = ["PIER_Rules", "LinkedIn_Message_Architect", "Lead_and_ICP_Brief", "OUTREACH_QUICK_REFERENCE", "PIER_Response_Bank"];
-const BASIC_VOICE_FALLBACK = "You are Oli (Oliver Mueller) at Pier Insurance, writing a first LinkedIn DM to a contact who just accepted your connection request. Voice: direct, warm, specific, peer-to-peer. No corporate jargon, no em-dashes/en-dashes. Keep it short (ideally under 600 characters). Reference something concrete about their company. End with a light, low-friction question. Sign off 'Oli'. Output ONLY the message body.";
+
+// T1: drafts are signed by whoever asked for them. This was hardcoded to "Oli" when Pier
+// had one user; there are now two (Oliver Müller, Jack Stevens) and a draft Jack generates
+// must not go out signed as Oli.
+//
+// Resolution order:
+//   1. body.requesting_user  - the logged-in user, passed by the Lovable UI
+//   2. the contact's owner_user_id -> that user's display name. owner_user_id is CANON for
+//      ownership (the older account_owner column is migration reference data only). This is
+//      what makes the chained CR-accepted path correct: nobody is "requesting" it, so the
+//      draft is signed by whoever owns the contact.
+//   3. "Oli" - last-resort legacy default, logged as a warning so it is visible.
+const NICKNAMES: Record<string, string> = { oliver: "Oli" };
+function firstNameOf(display: string): string {
+  const first = (display ?? "").trim().split(/\s+/)[0] ?? "";
+  if (!first) return "";
+  return NICKNAMES[first.toLowerCase()] ?? first;
+}
+// deno-lint-ignore no-explicit-any
+async function resolveSender(supa: any, requesting: string, ownerUserId: string | null): Promise<string> {
+  const fromBody = firstNameOf(requesting);
+  if (fromBody) return fromBody;
+  if (ownerUserId) {
+    try {
+      const { data } = await supa.auth.admin.getUserById(ownerUserId);
+      const meta = data?.user?.user_metadata ?? {};
+      const display = meta.name ?? meta.full_name ?? meta.display_name ?? (data?.user?.email ?? "").split("@")[0];
+      const fromOwner = firstNameOf(String(display ?? ""));
+      if (fromOwner) return fromOwner;
+    } catch (e) {
+      console.warn(JSON.stringify({ event: "sender_lookup_failed", message: (e as Error).message }));
+    }
+  }
+  console.warn(JSON.stringify({ event: "sender_defaulted", detail: "No requesting_user and no resolvable owner; defaulting to Oli." }));
+  return "Oli";
+}
+const basicVoiceFallback = (sender: string) => `You are ${sender} at Pier Insurance, writing a first LinkedIn DM to a contact who just accepted your connection request. Voice: direct, warm, specific, peer-to-peer. No corporate jargon, no em-dashes/en-dashes. Keep it short (ideally under 600 characters). Reference something concrete about their company. End with a light, low-friction question. Sign off '${sender}'. Output ONLY the message body.`;
 // Highest-priority behavioural contract, appended AFTER the EA docs so it is the last thing the
 // model reads. Fixes the failure mode where a contact with prior outreach made the model emit
 // meta-commentary ("I have already sent a message on ...") instead of a usable DM.
 // Bundle B T4: this directive claims priority over everything above it, so it must agree
 // with the trigger. Hardcoding "LinkedIn DM" here made it contradict the Intent line on
 // every InMail chaser, and the directive would have won.
-function forwardDirective(m: { channel: string; touch_type: string; intent: string }): string {
+function forwardDirective(m: { channel: string; touch_type: string; intent: string }, sender: string): string {
   return [
   "",
   "",
   "===== DRAFTING DIRECTIVE (overrides everything above on output format) =====",
-  `You are producing ONE ${m.channel} message - a "${m.touch_type}" - that Oli will paste and send right now.`,
+  `You are producing ONE ${m.channel} message - a "${m.touch_type}" - that ${sender} will paste and send right now.`,
   `- Intent for this specific message: ${m.intent}`,
   "- Output ONLY the message body. Never write meta-commentary, notes to the operator, questions about whether to send, or explanations of your reasoning.",
   "- NEVER reference the drafting process or the contact's message history in the body. Banned openings include anything like \"I have already sent\", \"Before drafting\", \"Since you previously\", \"I notice we last spoke\", \"flagging a few\".",
@@ -66,6 +102,7 @@ Deno.serve(async (req) => {
   try { body = await req.json(); } catch { return json(400, { error: "invalid_json" }); }
   const contactId = String(body?.contact_id ?? "").trim();
   const triggerReason = String(body?.trigger_reason ?? "cr_accepted").trim();
+  const requestingUser = String(body?.requesting_user ?? "").trim();
   if (!contactId) return json(400, { error: "missing_required_fields", detail: "contact_id required" });
 
   // Bundle B T4: the trigger decides which kind of touch this draft is, which in turn
@@ -77,9 +114,9 @@ Deno.serve(async (req) => {
   // touch_type values come from the outreach_type enum (migration 038).
   const TRIGGER_MAP: Record<string, { channel: string; touch_type: string; intent: string }> = {
     cr_accepted: { channel: "LinkedIn DM", touch_type: "Initial message",
-      intent: "They have just accepted Oli's connection request. Write the first message on a brand-new thread." },
+      intent: "They have just accepted your connection request. Write the first message on a brand-new thread." },
     inmail_cold: { channel: "LinkedIn inMail", touch_type: "Initial message",
-      intent: "This is a cold InMail to someone Oli is not connected to. No prior relationship - earn the reply." },
+      intent: "This is a cold InMail to someone you are not connected to. No prior relationship - earn the reply." },
     chaser_1: { channel: "LinkedIn inMail", touch_type: "Chaser 1",
       intent: "First chase. The earlier message went unanswered. Add one new angle; do not repeat the opener and do not guilt them." },
     chaser_2: { channel: "LinkedIn inMail", touch_type: "Chaser 2",
@@ -93,10 +130,13 @@ Deno.serve(async (req) => {
 
   try {
     const { data: contact, error: cErr } = await supabase.from("contacts")
-      .select("id, contact_id, first_name, last_name, job_title, seniority, function, location, linkedin_url, company_id, connection_status")
+      .select("id, contact_id, first_name, last_name, job_title, seniority, function, location, linkedin_url, company_id, connection_status, owner_user_id")
       .eq("team_id", PIER_TEAM_ID).eq("id", contactId).maybeSingle();
     if (cErr) throw cErr;
     if (!contact) return json(404, { error: "contact_not_found" });
+
+    const sender = await resolveSender(supabase, requestingUser, contact.owner_user_id ?? null);
+    console.log(JSON.stringify({ event: "sender_resolved", sender, from_body: !!requestingUser, contact_id: contact.id }));
 
     // Dedup guard: if an agent-produced pending_review draft already exists for this
     // contact + channel + touch_type, do not create a duplicate. Every 4h Connection
@@ -129,7 +169,7 @@ Deno.serve(async (req) => {
     }
 
     const { data: prevRows } = await supabase.from("outreach_log")
-      .select("touch_date, channel, touch_type, message_body, subject_line, reply_content")
+      .select("touch_date, channel, touch_type, message_body, subject_line, reply_content, sent_by")
       .eq("team_id", PIER_TEAM_ID).eq("contact_id", contactId).order("touch_date", { ascending: true }).limit(50);
     // Only the last 30 days count as "live" thread context; older messages are summarised as a
     // re-engagement note so stale threads never derail the draft (older = stale, ignore the detail).
@@ -143,16 +183,19 @@ Deno.serve(async (req) => {
     // reply_content (fallback message_body for legacy rows) and never label it "Oli".
     // Every non-Reply touch is OUTBOUND from Oli. This fixes the previous double-render
     // where a Reply row appeared as both "Oli: <text>" and "Reply: <text>".
-    const who = contact.first_name ? String(contact.first_name) : "the contact";
+    const them = contact.first_name ? String(contact.first_name) : "the contact";
     const renderMsg = (r: typeof allPrev[number]) => {
       const date = r.touch_date ?? "";
       if (r.touch_type === "Reply") {
         const body = String(r.reply_content ?? r.message_body ?? "").slice(0, 500);
-        return `- ${date} Reply from ${who}: ${body}`;
+        return `- ${date} Reply from ${them}: ${body}`;
       }
       const subj = r.subject_line ? `[${r.subject_line}] ` : "";
       const body = String(r.message_body ?? "").slice(0, 500);
-      return `- ${date} Oli: ${subj}${body}`;
+      // Historical touches are attributed to whoever actually sent them, not to the
+      // current requester - otherwise Jack would appear to have sent Oli's old messages.
+      const who = String(r.sent_by ?? "").trim() || "us";
+      return `- ${date} ${who}: ${subj}${body}`;
     };
     let threadText: string;
     if (allPrev.length === 0) {
@@ -175,14 +218,14 @@ Deno.serve(async (req) => {
       const byName = new Map(((docs ?? []) as Array<{ name: string; content: string }>).map((d) => [d.name, d.content]));
       const parts: string[] = [];
       for (const n of EA_ORDER) { const c = byName.get(n); if (c) parts.push(`===== ${n} =====\n${c}`); }
-      systemPrompt = parts.length === 0 ? BASIC_VOICE_FALLBACK : parts.join("\n\n");
+      systemPrompt = parts.length === 0 ? basicVoiceFallback(sender) : parts.join("\n\n");
       if (parts.length === 0) console.warn(JSON.stringify({ event: "ea_docs_empty" }));
     } catch (e) {
       console.warn(JSON.stringify({ event: "ea_docs_load_failed", message: (e as Error).message }));
-      systemPrompt = BASIC_VOICE_FALLBACK;
+      systemPrompt = basicVoiceFallback(sender);
     }
     // Behavioural contract always wins on output format, regardless of which voice source was used.
-    systemPrompt = systemPrompt + forwardDirective(mapped);
+    systemPrompt = systemPrompt + forwardDirective(mapped, sender);
 
     const path = "A";
     const arc = "A";
@@ -191,7 +234,7 @@ Deno.serve(async (req) => {
     const frame = insuranceActive ? "Discovery" : (isCsuite ? "Ally" : "Peer");
 
     const co = company ?? {};
-    const userPrompt = `DRAFT REQUEST\n\nTrigger: ${triggerReason}\nMessage type: ${mapped.touch_type} via ${mapped.channel}\nChannel: ${mapped.channel}\nIntent: ${mapped.intent}\nPath: ${path}\nFrame: ${frame}\nArc: ${arc}\n\nCONTACT\nName: ${contact.first_name ?? ""} ${contact.last_name ?? ""}\nTitle: ${contact.job_title ?? ""}\nSeniority: ${contact.seniority ?? ""}\nFunction: ${contact.function ?? ""}\nLocation: ${contact.location ?? ""}\nLinkedIn URL: ${contact.linkedin_url ?? ""}\n\nCOMPANY\nName: ${co.company_name ?? ""}\nCountry: ${co.country ?? ""}\nCategory: ${Array.isArray(co.category) ? co.category.join(", ") : (co.category ?? "")}\nPriority: ${co.priority ?? ""}\nIndustry: ${co.industry ?? ""}\nProduct line: ${co.product_line ?? ""}\nInsurance offered: ${co.insurance_offered ?? ""}\nInsurance provider: ${co.insurance_provider ?? ""}\nCoverage summary: ${co.coverage_summary ?? ""}\nUSP notes: ${co.usp_notes ?? ""}\nAdditional notes: ${co.additional_notes ?? ""}\nEstimated revenue: ${co.estimated_revenue_gbp ?? ""}\nEmployees: ${co.employees ?? ""}\nMonthly visits: ${co.monthly_visits ?? ""}\n\nPREVIOUS OUTREACH (background only - never mention it in the message)\n${threadText}\n\nTASK\nWrite the single ${mapped.channel} message Oli should send to this contact now, applying the loaded PIER_Rules, LinkedIn_Message_Architect, Lead_and_ICP_Brief, OUTREACH_QUICK_REFERENCE, and PIER_Response_Bank. This message is a "${mapped.touch_type}": ${mapped.intent} If prior outreach exists, write a natural forward message (re-engagement) - never a first-touch opener and never a comment on the history.\n\nSign off: Oli\n\nOutput ONLY the message body Oli will send. No preamble, no meta-commentary, no notes about prior messages, no subject line.`;
+    const userPrompt = `DRAFT REQUEST\n\nTrigger: ${triggerReason}\nMessage type: ${mapped.touch_type} via ${mapped.channel}\nChannel: ${mapped.channel}\nIntent: ${mapped.intent}\nPath: ${path}\nFrame: ${frame}\nArc: ${arc}\n\nCONTACT\nName: ${contact.first_name ?? ""} ${contact.last_name ?? ""}\nTitle: ${contact.job_title ?? ""}\nSeniority: ${contact.seniority ?? ""}\nFunction: ${contact.function ?? ""}\nLocation: ${contact.location ?? ""}\nLinkedIn URL: ${contact.linkedin_url ?? ""}\n\nCOMPANY\nName: ${co.company_name ?? ""}\nCountry: ${co.country ?? ""}\nCategory: ${Array.isArray(co.category) ? co.category.join(", ") : (co.category ?? "")}\nPriority: ${co.priority ?? ""}\nIndustry: ${co.industry ?? ""}\nProduct line: ${co.product_line ?? ""}\nInsurance offered: ${co.insurance_offered ?? ""}\nInsurance provider: ${co.insurance_provider ?? ""}\nCoverage summary: ${co.coverage_summary ?? ""}\nUSP notes: ${co.usp_notes ?? ""}\nAdditional notes: ${co.additional_notes ?? ""}\nEstimated revenue: ${co.estimated_revenue_gbp ?? ""}\nEmployees: ${co.employees ?? ""}\nMonthly visits: ${co.monthly_visits ?? ""}\n\nPREVIOUS OUTREACH (background only - never mention it in the message)\n${threadText}\n\nTASK\nWrite the single ${mapped.channel} message ${sender} should send to this contact now, applying the loaded PIER_Rules, LinkedIn_Message_Architect, Lead_and_ICP_Brief, OUTREACH_QUICK_REFERENCE, and PIER_Response_Bank. This message is a "${mapped.touch_type}": ${mapped.intent} If prior outreach exists, write a natural forward message (re-engagement) - never a first-touch opener and never a comment on the history.\n\nSign off: ${sender}\n\nOutput ONLY the message body ${sender} will send. No preamble, no meta-commentary, no notes about prior messages, no subject line.`;
 
     let messageBody = "";
     let generationFailed = false;
@@ -208,7 +251,7 @@ Deno.serve(async (req) => {
         messages: [{ role: "user", content: userPrompt }],
         function_name: "generate-draft-from-context",
         team_id: PIER_TEAM_ID,
-        request_context: { contact_id: contact.id, trigger_reason: triggerReason, touch_type: mapped.touch_type, purpose: "draft_generation" },
+        request_context: { contact_id: contact.id, trigger_reason: triggerReason, touch_type: mapped.touch_type, sender, purpose: "draft_generation" },
         supabase,
         anthropic_api_key: ANTHROPIC_API_KEY,
       });
@@ -235,13 +278,13 @@ Deno.serve(async (req) => {
       channel: mapped.channel, touch_type: mapped.touch_type, message_body: messageBody, subject_line: null,
       draft_status: "pending_review", send_status: "Draft", agent_produced: true,
       pre_lint_pass: lint.pass, voice_contract_violations: lint.violations, lint_score: lint.score,
-      path, recommended_frame: frame, recommended_arc: arc, touch_date: today,
+      path, recommended_frame: frame, recommended_arc: arc, touch_date: today, sent_by: sender,
     };
     const { data: inserted, error: insErr } = await supabase.from("outreach_log").insert(insertRow).select("id").single();
     if (insErr) throw insErr;
 
-    console.log(JSON.stringify({ event: "draft_created", touch_id: inserted.id, contact_id: contact.id, lint_score: lint.score, pass: lint.pass, generation_failed: generationFailed }));
-    return json(200, { status: generationFailed ? "generation_failed" : "created", touch_id: inserted.id, message_preview: messageBody.slice(0, 200), pre_lint_pass: lint.pass, lint_score: lint.score, path, frame, gen_error: genError || undefined });
+    console.log(JSON.stringify({ event: "draft_created", touch_id: inserted.id, contact_id: contact.id, sender, lint_score: lint.score, pass: lint.pass, generation_failed: generationFailed }));
+    return json(200, { status: generationFailed ? "generation_failed" : "created", touch_id: inserted.id, sender, message_preview: messageBody.slice(0, 200), pre_lint_pass: lint.pass, lint_score: lint.score, path, frame, gen_error: genError || undefined });
   } catch (e) {
     console.error(JSON.stringify({ event: "handler_error", message: (e as Error).message ?? String(e) }));
     return json(500, { error: "internal_error", detail: (e as Error).message ?? "unknown" });
