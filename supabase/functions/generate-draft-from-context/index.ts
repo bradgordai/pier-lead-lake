@@ -27,10 +27,16 @@ const EA_ORDER = ["PIER_Rules", "LinkedIn_Message_Architect", "Lead_and_ICP_Brie
 //      draft is signed by whoever owns the contact.
 //   3. "Oli" - last-resort legacy default, logged as a warning so it is visible.
 const NICKNAMES: Record<string, string> = { oliver: "Oli" };
+// Split on whitespace AND . _ - so an email local-part degrades sensibly:
+// "oliver.muller" -> "Oliver" rather than the whole handle. Capitalise the first
+// letter because local-parts are lowercase and the name is used mid-sentence and
+// as a sign-off.
 function firstNameOf(display: string): string {
-  const first = (display ?? "").trim().split(/\s+/)[0] ?? "";
+  const first = (display ?? "").trim().split(/[\s._-]+/).filter(Boolean)[0] ?? "";
   if (!first) return "";
-  return NICKNAMES[first.toLowerCase()] ?? first;
+  const nick = NICKNAMES[first.toLowerCase()];
+  if (nick) return nick;
+  return first.charAt(0).toUpperCase() + first.slice(1);
 }
 // deno-lint-ignore no-explicit-any
 async function resolveSender(supa: any, requesting: string, ownerUserId: string | null): Promise<string> {
@@ -40,7 +46,10 @@ async function resolveSender(supa: any, requesting: string, ownerUserId: string 
     try {
       const { data } = await supa.auth.admin.getUserById(ownerUserId);
       const meta = data?.user?.user_metadata ?? {};
-      const display = meta.name ?? meta.full_name ?? meta.display_name ?? (data?.user?.email ?? "").split("@")[0];
+      // first_name is the convention already used on some accounts, so prefer it
+      // over the full-name fields; fall back to the email local-part last.
+      const display = meta.first_name ?? meta.name ?? meta.full_name ?? meta.display_name
+        ?? (data?.user?.email ?? "").split("@")[0];
       const fromOwner = firstNameOf(String(display ?? ""));
       if (fromOwner) return fromOwner;
     } catch (e) {
