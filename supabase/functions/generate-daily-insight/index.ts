@@ -164,6 +164,14 @@ Total prose across all sections 250-350 words. priority_flags and queue_recommen
   try { content = JSON.parse(raw); } catch { return json(502, { error: "parse_failed", raw: raw.slice(0, 500) }); }
   content.date = dateStr;
 
+  // Card-level helper note for Yesterday's Work. Set here rather than asked of the
+  // model: the wording is fixed and must not drift between days, and this costs no
+  // tokens. Unconditional because the claim is about the funnel's cumulative CR data
+  // (still majority backfilled), not about yesterday's activity - so it holds even on
+  // a day with no CRs. The UI renders nothing when the field is absent, which covers
+  // insights stored before this field existed.
+  content.note = "CRs logged include historical connection requests backfilled into your funnel, not just new sends.";
+
   const { error: upErr } = await supabase.from("daily_insights").upsert({
     team_id: PIER_TEAM_ID, insight_date: dateStr, headline: content.headline ?? null,
     content, model: MODEL, generated_at: new Date().toISOString(),
