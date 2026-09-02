@@ -21,10 +21,10 @@
 // claude-sonnet-5 with thinking disabled and no temperature.
 
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.45.4";
+import { authorize } from "./_shared/authorize.ts";
 
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL") ?? "";
 const SERVICE_ROLE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") ?? "";
-const MAKE_SHARED_SECRET = Deno.env.get("MAKE_SHARED_SECRET") ?? "";
 const PIER_TEAM_ID = Deno.env.get("PIER_TEAM_ID") ?? "";
 const ANTHROPIC_API_KEY = Deno.env.get("ANTHROPIC_API_KEY") ?? "";
 const ANTHROPIC_MODEL = "claude-sonnet-5";
@@ -161,9 +161,10 @@ const SELECT = "id, job_title, country, location, function, seniority, language_
 
 Deno.serve(async (req) => {
   if (req.method !== "POST") return json(405, { error: "method_not_allowed" });
-  if (!MAKE_SHARED_SECRET || !PIER_TEAM_ID) return json(500, { error: "server_misconfigured" });
-  const authz = req.headers.get("authorization") ?? "";
-  if ((authz.startsWith("Bearer ") ? authz.slice(7) : "") !== MAKE_SHARED_SECRET) return json(401, { error: "unauthorized" });
+  if (!PIER_TEAM_ID) return json(500, { error: "server_misconfigured" });
+  // Scoped-secret auth (CRITICAL 2). Chained from upsert-contact-from-sales-nav, which
+  // already sends INTERNAL_APP_SECRET, so this pair cuts over together.
+  if (!authorize(req, "internal", "enrich-contact-metadata")) return json(401, { error: "unauthorized" });
 
   // deno-lint-ignore no-explicit-any
   let body: any;

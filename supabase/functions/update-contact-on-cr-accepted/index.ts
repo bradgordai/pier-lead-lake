@@ -14,17 +14,22 @@
 // Security / conventions (mirrors upsert-contact-from-sales-nav):
 //   - service_role is used ONLY to construct the Supabase client at boot (below).
 //     Every query is explicitly scoped to PIER_TEAM_ID because service_role bypasses RLS.
-//   - Custom auth: callers present `Authorization: Bearer <MAKE_SHARED_SECRET>`.
+//   - Custom auth: callers present `Authorization: Bearer <INBOUND_WEBHOOK_SECRET>`.
+//     The legacy MAKE_SHARED_SECRET is still accepted during the transition and logs
+//     `deprecated_secret_used` when it is what worked.
 //     Deployed with verify_jwt=false so this Bearer reaches the handler.
 //   - DB errors are caught and returned as 500; the function never throws to the runtime.
 //   - The connection_status flip is an UPDATE on contacts, so the existing
 //     fn_audit_entity trigger records an "Updated <name>" audit_log row automatically.
 
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.45.4";
+import { authorize } from "./_shared/authorize.ts";
 
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL") ?? "";
 const SERVICE_ROLE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") ?? "";
-const MAKE_SHARED_SECRET = Deno.env.get("MAKE_SHARED_SECRET") ?? "";
+// Outbound bearer for the chained call to generate-draft-from-context. Prefers the scoped
+// internal secret; falls back to the legacy one so the chain keeps working mid-transition.
+const OUTBOUND_SECRET = Deno.env.get("INTERNAL_APP_SECRET") || Deno.env.get("MAKE_SHARED_SECRET") || "";
 const PIER_TEAM_ID = Deno.env.get("PIER_TEAM_ID") ?? "";
 
 // service_role client — constructed once at boot; only used via the client API.
@@ -48,14 +53,10 @@ function extractSlug(url: string): string | null {
 Deno.serve(async (req) => {
   if (req.method !== "POST") return json(405, { error: "method_not_allowed" });
 
-  // Config presence (also serves as a secret-wiring check).
-  if (!MAKE_SHARED_SECRET) return json(500, { error: "server_misconfigured", detail: "MAKE_SHARED_SECRET not set" });
   if (!PIER_TEAM_ID) return json(500, { error: "server_misconfigured", detail: "PIER_TEAM_ID not set" });
 
-  // Shared-secret auth.
-  const authz = req.headers.get("authorization") ?? "";
-  const token = authz.startsWith("Bearer ") ? authz.slice(7) : "";
-  if (token !== MAKE_SHARED_SECRET) return json(401, { error: "unauthorized" });
+  // Scoped-secret auth (security audit CRITICAL 2).
+  if (!authorize(req, "inbound", "update-contact-on-cr-accepted")) return json(401, { error: "unauthorized" });
 
   // deno-lint-ignore no-explicit-any
   let body: any;
@@ -117,7 +118,7 @@ Deno.serve(async (req) => {
     try {
       const draftResp = await fetch(`${SUPABASE_URL}/functions/v1/generate-draft-from-context`, {
         method: "POST",
-        headers: { authorization: `Bearer ${MAKE_SHARED_SECRET}`, "content-type": "application/json" },
+        headers: { authorization: `Bearer ${OUTBOUND_SECRET}`, "content-type": "application/json" },
         body: JSON.stringify({ contact_id: contact.id, trigger_reason: "cr_accepted" }),
       });
       draft = await draftResp.json().catch(() => ({ ok: false, http: draftResp.status }));

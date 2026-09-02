@@ -11,7 +11,8 @@
 //   - service_role is used ONLY to construct the Supabase client at boot (below).
 //     Every query is explicitly scoped to PIER_TEAM_ID because service_role
 //     bypasses RLS. No service_role in request-path business logic.
-//   - Custom auth: callers present `Authorization: Bearer <MAKE_SHARED_SECRET>`.
+//   - Custom auth: callers present `Authorization: Bearer <INBOUND_WEBHOOK_SECRET>`.
+//     Legacy MAKE_SHARED_SECRET still accepted during the transition.
 //     Deployed with verify_jwt=false so this Bearer reaches the handler.
 //   - Anthropic failure is non-fatal: the reply is still captured and marked
 //     reply_classification='Uncategorised', confidence=0. The function never
@@ -36,10 +37,10 @@
 //     "Reply:" rather than misattributing it to Oli).
 
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.45.4";
+import { authorize } from "./_shared/authorize.ts";
 
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL") ?? "";
 const SERVICE_ROLE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") ?? "";
-const MAKE_SHARED_SECRET = Deno.env.get("MAKE_SHARED_SECRET") ?? "";
 const PIER_TEAM_ID = Deno.env.get("PIER_TEAM_ID") ?? "";
 const ANTHROPIC_API_KEY = Deno.env.get("ANTHROPIC_API_KEY") ?? "";
 const ANTHROPIC_MODEL = "claude-sonnet-5";
@@ -126,12 +127,10 @@ function classifyFromText(text: string): { reply_classification: string; outcome
 Deno.serve(async (req) => {
   if (req.method !== "POST") return json(405, { error: "method_not_allowed" });
 
-  if (!MAKE_SHARED_SECRET) return json(500, { error: "server_misconfigured", detail: "MAKE_SHARED_SECRET not set" });
   if (!PIER_TEAM_ID) return json(500, { error: "server_misconfigured", detail: "PIER_TEAM_ID not set" });
 
-  const authz = req.headers.get("authorization") ?? "";
-  const token = authz.startsWith("Bearer ") ? authz.slice(7) : "";
-  if (token !== MAKE_SHARED_SECRET) return json(401, { error: "unauthorized" });
+  // Scoped-secret auth (security audit CRITICAL 2).
+  if (!authorize(req, "inbound", "capture-and-classify-reply")) return json(401, { error: "unauthorized" });
 
   // deno-lint-ignore no-explicit-any
   let body: any;

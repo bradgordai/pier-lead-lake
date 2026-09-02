@@ -4,7 +4,8 @@
 // (insert-only, never overwrite) or queue MEDIUM/LOW guesses to
 // company_enrichment_queue for Oli to review.
 //
-// Auth: shared-secret Bearer (MAKE_SHARED_SECRET), verify_jwt=false.
+// Auth: scoped-secret Bearer (INTERNAL_APP_SECRET; legacy MAKE_SHARED_SECRET still
+// accepted during the transition), verify_jwt=false.
 // Needs env: APIFY_TOKEN (set in Supabase → Edge Functions → Secrets).
 //
 // Body:
@@ -14,10 +15,10 @@
 // Returns: { scanned, auto_written, queued, skipped_existing, apify_cost_hint }
 
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
+import { authorize } from "./_shared/authorize.ts";
 
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
 const SERVICE_ROLE = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
-const SHARED_SECRET = Deno.env.get("MAKE_SHARED_SECRET")!;
 const APIFY_TOKEN = Deno.env.get("APIFY_TOKEN") ?? "";
 const PIER_TEAM_ID = "ef73c15e-4d6f-4159-bcfa-cc76b5ae4972";
 const ACTOR = "apify/google-search-scraper";
@@ -122,7 +123,8 @@ function classify(name: string, organic: any[]): Classified {
 Deno.serve(async (req) => {
   if (req.method === "OPTIONS") return new Response("ok", { headers: cors });
   if (req.method !== "POST") return json(405, { error: "method_not_allowed" });
-  if (req.headers.get("authorization") !== `Bearer ${SHARED_SECRET}`) return json(401, { error: "unauthorized" });
+  // Scoped-secret auth (security audit CRITICAL 2).
+  if (!authorize(req, "internal", "enrich-company-websites")) return json(401, { error: "unauthorized" });
   if (!APIFY_TOKEN) return json(500, { error: "APIFY_TOKEN not configured", hint: "Set APIFY_TOKEN in Supabase → Edge Functions → Secrets" });
 
   let body: any = {};
