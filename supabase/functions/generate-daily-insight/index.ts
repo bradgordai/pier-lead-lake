@@ -69,13 +69,27 @@ Deno.serve(async (req) => {
       .eq("team_id", PIER_TEAM_ID).gte("touch_date", dateStr).lt("touch_date", nextStr),
     supabase.from("audit_log")
       .select("entity_type, action").eq("team_id", PIER_TEAM_ID).gte("created_at", dateStr).lt("created_at", nextStr),
+    // B4: pending drafts must match the CANON predicate used by Today and the Outreach
+    // Pending Review tab - draft_status='pending_review' AND the contact is not archived
+    // AND the company is not archived. This previously filtered on agent_produced, which
+    // made the briefing report a fourth, smaller number (15 against a canon of 75) while
+    // calling it "drafts waiting". Archived-ness lives on the joined rows, so it is
+    // filtered in JS below rather than in the query.
     supabase.from("outreach_log")
-      .select("id, contact_id", { count: "exact" })
-      .eq("team_id", PIER_TEAM_ID).eq("draft_status", "pending_review").eq("agent_produced", true),
+      .select("id, agent_produced, contacts:contact_id(archived_at), companies:company_id(archived_at)")
+      .eq("team_id", PIER_TEAM_ID).eq("draft_status", "pending_review").limit(5000),
     supabase.from("contacts")
       .select("first_name, last_name, outreach_status, priority")
       .eq("team_id", PIER_TEAM_ID).eq("outreach_status", "In conversation").limit(25),
   ]);
+
+  // B4: apply the canon predicate in JS - archived-ness is on the embedded rows.
+  // deno-lint-ignore no-explicit-any
+  const pendingRows = ((pending ?? []) as any[]).filter(
+    (r) => !r?.contacts?.archived_at && !r?.companies?.archived_at,
+  );
+  const canonPending = pendingRows.length;
+  const agentProducedPending = pendingRows.filter((r) => r?.agent_produced === true).length;
 
   const orows = outreach ?? [];
   const replies = orows.filter((r) => r.touch_type === "Reply");
@@ -122,15 +136,16 @@ Deno.serve(async (req) => {
       by_entity: tally(audit ?? [], (r) => r.entity_type),
       by_action: tally(audit ?? [], (r) => r.action),
     },
-    drafts_waiting: { pending_review_now: (pending as any) ? (pending as any).length : 0 },
+    // pending_review_now is CANON and is the only figure that may be called "pending".
+    // agent_produced_pending is a labelled subset, never a substitute for it.
+    drafts_waiting: {
+      pending_review_now: canonPending,
+      agent_produced_pending: agentProducedPending,
+    },
     // Who was actually touched. Every name the briefing mentions must come from here.
     activity_by_person,
   };
-  // count is on the response object, not the data array — re-read via count query result
-  const { count: pendingCount } = await supabase.from("outreach_log")
-    .select("id", { count: "exact", head: true })
-    .eq("team_id", PIER_TEAM_ID).eq("draft_status", "pending_review").eq("agent_produced", true);
-  facts.drafts_waiting.pending_review_now = pendingCount ?? 0;
+  // (canonPending / agentProducedPending are computed above, before `facts` is built.)
 
   // ---- Sonnet ----
   const system = `You are the assistant for Oli, who runs B2B outreach for Pier (embedded gadget insurance) in a bespoke CRM. Write a crisp "Yesterday's Work" briefing from the activity facts. British English, plain and specific, no hype, no emoji. If a metric is zero, say so briefly rather than inventing activity.
@@ -146,6 +161,13 @@ include historical CRs being backfilled into the funnel, not only new sends made
 Do not describe them as if Oli sent them yesterday. Say they were "recorded" or "logged"
 rather than "sent", and if CRs are the bulk of the activity, note plainly that these are
 backfilled historical records.
+
+DRAFTS WAITING - READ CAREFULLY. `drafts_waiting.pending_review_now` is the canonical
+count of drafts awaiting review and is the ONLY number you may describe as "pending" or
+"awaiting review"; it matches what Oli sees on Today and on the Outreach Pending Review tab.
+`drafts_waiting.agent_produced_pending` is the subset of those that the agent drafted. If you
+mention it at all, label it explicitly as agent-drafted, e.g. "75 awaiting review, 15 of them
+agent-drafted". NEVER present agent_produced_pending as the pending total.
 
 Return ONLY valid minified JSON (no markdown), exactly this shape:
 {"date":"YYYY-MM-DD","headline":"<=90 chars, the single most important thing about yesterday","sections":{"outreach_activity":"1-2 sentences","replies_and_conversations":"1-2 sentences","contact_changes":"1-2 sentences","drafts_waiting":"1-2 sentences","priority_signals":"2-3 sentences on what deserves Oli's attention today"},"priority_flags":["short actionable flag", "..."],"queue_recommendations":["short next-step recommendation", "..."],"people":[{"id":"<contact_id uuid from activity_by_person>","name":"<their name>"}]}
