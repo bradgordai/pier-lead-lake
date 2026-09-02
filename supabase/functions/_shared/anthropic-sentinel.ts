@@ -25,8 +25,13 @@
 //
 // Cache reads are 10% of the base input price (documented). The cache-WRITE multiplier is
 // not given on the overview page; 1.25x input is the long-standing 5-minute-TTL rate and
-// is used here as an approximation. No Pier function currently sends cache_control, so
-// this path is inert today - confirm the multiplier before relying on it.
+// is used here as an approximation.
+//
+// AS OF 2026-09-02 THIS PATH IS LIVE (B2). generate-draft-from-context and
+// capture-and-classify-reply both send cache_control on their static EA-document prefix,
+// so cache_creation_tokens / cache_read_tokens are now real numbers in api_call_log and
+// the 1.25x write multiplier actually moves the cost estimate. It remains an assumption:
+// if the estimate is ever reconciled against an Anthropic invoice, check this first.
 // ---------------------------------------------------------------------------
 
 // USD per million tokens.
@@ -109,7 +114,10 @@ export type SentinelResult = {
 
 export async function callAnthropicWithSentinel(params: {
   model: string;
-  system?: string;
+  // Either a plain string, or Anthropic content blocks so a caller can place a
+  // cache_control breakpoint on its static prefix (B2 prompt caching).
+  // deno-lint-ignore no-explicit-any
+  system?: string | Array<Record<string, any>>;
   messages: Array<{ role: string; content: string }>;
   max_tokens: number;
   thinking?: { type: "disabled" | "enabled" };
@@ -237,6 +245,7 @@ export async function callAnthropicWithSentinel(params: {
   console.log(JSON.stringify({
     event: "sentinel_call", function_name, model, succeeded,
     input_tokens: inTok, output_tokens: outTok, estimated_cost_gbp: cost,
+    cache_creation_tokens: cacheCreate, cache_read_tokens: cacheRead,
   }));
 
   if (!succeeded) throw new Error(errorMessage ?? "anthropic_call_failed");
