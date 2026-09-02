@@ -151,3 +151,18 @@ select count(*) from logs where position(event_message, 'deprecated_secret_used'
 
 Still outstanding from CRITICAL 1 and more urgent than any of this: **rotate the LinkedIn
 session cookie and the PhantomBuster API key.**
+
+## 2026-09-02 (later) — B1: both crons re-pointed
+
+`cron.job` ids 2 and 3 now send `INTERNAL_APP_SECRET` instead of the legacy secret.
+Verified by re-reading `cron.job`: bearer length 48 (was 32), equality against
+`INTERNAL_APP_SECRET` true, URLs / bodies / schedules / active flags unchanged.
+
+**Deprecation note.** Blocker 1 from the section above is cleared. `MAKE_SHARED_SECRET` now
+has exactly one known remaining consumer class: the three Make scenarios
+(9589633 Sales Nav Watcher, 9590745 Connection Watcher, 9704543 Inbox Watcher), which only
+Brad can re-point. **The 24h deletion clock starts when those three are changed**, not now.
+
+The secret value is still a plaintext literal inside `cron.job.command`, i.e. inside a
+database table. Re-pointing swapped which secret is exposed there, it did not remove the
+exposure. Moving both jobs to a Vault read is the real fix and is still outstanding.
