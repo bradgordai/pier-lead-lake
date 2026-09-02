@@ -38,6 +38,7 @@
 
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.45.4";
 import { authorize } from "./_shared/authorize.ts";
+import { callAnthropicWithSentinel, BudgetExceededError } from "./_shared/anthropic-sentinel.ts";
 
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL") ?? "";
 const SERVICE_ROLE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") ?? "";
@@ -81,6 +82,41 @@ const VALID_OUTCOME = new Set([
 // 'Do not contact'/'Not relevant' are consent/qualification states (see migration 018);
 // 'Left company' is a hard stop. Elevating any of these would be wrong or unsafe.
 const NO_ELEVATE = new Set(["Do not contact", "Not relevant", "Left company"]);
+
+// B8 MOVE TO MONDAY. Any inbound reply from any contact raises an alert on Today asking
+// whether the company should move to Monday Deals. One OPEN alert per company at a time:
+// a second reply refreshes the existing alert (bumps last_seen_at and trigger_count)
+// rather than stacking duplicates. A DISMISSED alert is not reopened here - the partial
+// unique index only covers status='open', so the next reply inserts a fresh one, which is
+// exactly the 'reject means it re-fires next time' behaviour asked for. No snooze.
+// deno-lint-ignore no-explicit-any
+async function raiseMoveToMondayAlert(supa: any, companyId: string | null, touchRowId: string): Promise<void> {
+  if (!companyId) return;
+  try {
+    const { data: open } = await supa.from("company_alerts")
+      .select("id, trigger_count")
+      .eq("team_id", PIER_TEAM_ID).eq("company_id", companyId)
+      .eq("alert_type", "move_to_monday").eq("status", "open")
+      .limit(1).maybeSingle();
+    if (open) {
+      await supa.from("company_alerts").update({
+        last_seen_at: new Date().toISOString(),
+        trigger_count: (open.trigger_count ?? 1) + 1,
+        triggered_by_touch_id: touchRowId,
+      }).eq("id", open.id);
+      console.log(JSON.stringify({ event: "move_to_monday_alert_refreshed", company_id: companyId, alert_id: open.id }));
+      return;
+    }
+    const { data: created } = await supa.from("company_alerts").insert({
+      team_id: PIER_TEAM_ID, company_id: companyId, alert_type: "move_to_monday",
+      status: "open", triggered_by_touch_id: touchRowId,
+    }).select("id").single();
+    console.log(JSON.stringify({ event: "move_to_monday_alert_created", company_id: companyId, alert_id: created?.id }));
+  } catch (e) {
+    // Never let alerting break reply capture - the reply is the thing that matters.
+    console.error(JSON.stringify({ event: "move_to_monday_alert_failed", company_id: companyId, message: (e as Error).message ?? String(e) }));
+  }
+}
 
 // Canonical LinkedIn slug from a public /in/{slug} URL (matches migration 031's regex).
 function extractSlug(url: string): string | null {
@@ -241,6 +277,7 @@ Deno.serve(async (req) => {
 
     // Load EA classification docs (graceful if any are missing/inactive).
     let systemPrompt = "";
+    let eaDocsLoaded = false;
     try {
       const { data: docs, error: dErr } = await supabase
         .from("pier_ea_documents").select("name, content")
@@ -250,12 +287,22 @@ Deno.serve(async (req) => {
       const parts: string[] = [];
       for (const n of EA_NAMES) { const c = byName.get(n); if (c) parts.push(`===== ${n} =====\n${c}`); }
       systemPrompt = parts.join("\n\n");
+      eaDocsLoaded = parts.length > 0;
       if (parts.length === 0) console.warn(JSON.stringify({ event: "ea_docs_empty" }));
     } catch (e) {
       console.warn(JSON.stringify({ event: "ea_docs_load_failed", message: (e as Error).message }));
       systemPrompt = "";
     }
     systemPrompt = systemPrompt + "\n\n" + CLASSIFY_INSTRUCTIONS;
+
+    // B2/B3: this whole system prompt is static - the EA docs plus fixed classification
+    // instructions, with nothing interpolated - so one cache_control breakpoint at the end
+    // covers all ~28k tokens. Only cached when the docs loaded; the bare instructions are
+    // too small to be worth the 1.25x write premium.
+    // deno-lint-ignore no-explicit-any
+    const systemParam: any = eaDocsLoaded
+      ? [{ type: "text", text: systemPrompt, cache_control: { type: "ephemeral" } }]
+      : systemPrompt;
 
     const userPrompt = `CONTACT: ${contact.first_name ?? senderFirstName} ${contact.last_name ?? senderLastName}\n\nPRIOR THREAD (oldest first; OLI = Oli's outbound, PROSPECT = their replies):\n${priorThread || "(no prior messages on record)"}\n\nNEW INBOUND REPLY TO CLASSIFY\nFrom: ${contact.first_name ?? senderFirstName} ${contact.last_name ?? senderLastName}\nReceived: ${parsedDate}\nMessage:\n${messageBody}\n\nReturn ONLY the JSON classification object.`;
 
@@ -264,21 +311,35 @@ Deno.serve(async (req) => {
     let genError = "";
     try {
       if (!ANTHROPIC_API_KEY) throw new Error("ANTHROPIC_API_KEY missing");
-      const resp = await fetch("https://api.anthropic.com/v1/messages", {
-        method: "POST",
-        headers: { "x-api-key": ANTHROPIC_API_KEY, "anthropic-version": "2023-06-01", "content-type": "application/json" },
-        body: JSON.stringify({ model: ANTHROPIC_MODEL, max_tokens: 512, thinking: { type: "disabled" }, system: systemPrompt, messages: [{ role: "user", content: userPrompt }] }),
+      // Routed through the sentinel (B3): costed, logged to api_call_log, and refused
+      // once today's spend hits the ceiling. Until this change every classification here
+      // was invisible to the budget gate.
+      const result = await callAnthropicWithSentinel({
+        model: ANTHROPIC_MODEL,
+        max_tokens: 512,
+        thinking: { type: "disabled" },
+        system: systemParam,
+        messages: [{ role: "user", content: userPrompt }],
+        function_name: "capture-and-classify-reply",
+        team_id: PIER_TEAM_ID,
+        request_context: { contact_id: contact.id, touch_id: touchRowId, purpose: "reply_classification" },
+        supabase,
+        anthropic_api_key: ANTHROPIC_API_KEY,
       });
-      const data = await resp.json();
-      if (!resp.ok) { genError = `http_${resp.status}: ${JSON.stringify(data).slice(0, 300)}`; throw new Error("anthropic_http_" + resp.status); }
-      const text = ((data?.content ?? []) as Array<{ type: string; text?: string }>).filter((b) => b.type === "text").map((b) => b.text ?? "").join("").trim();
-      const parsed = classifyFromText(text);
-      if (!parsed) { genError = `unparseable: ${text.slice(0, 200)}`; throw new Error("classification_unparseable"); }
+      const parsed = classifyFromText(result.content);
+      if (!parsed) { genError = `unparseable: ${result.content.slice(0, 200)}`; throw new Error("classification_unparseable"); }
       cls = parsed;
-      console.log(JSON.stringify({ event: "classified", usage: data?.usage, reply_classification: cls.reply_classification, outcome: cls.outcome, confidence: cls.confidence }));
+      console.log(JSON.stringify({ event: "classified", usage: result.usage, estimated_cost_gbp: result.estimated_cost_gbp, reply_classification: cls.reply_classification, outcome: cls.outcome, confidence: cls.confidence }));
     } catch (e) {
-      if (!genError) genError = (e as Error).message ?? String(e);
-      console.error(JSON.stringify({ event: "classification_failed", message: genError }));
+      // A budget block is not a classification bug. The reply is already captured above,
+      // so leave it Uncategorised and say so plainly rather than losing the message.
+      if (e instanceof BudgetExceededError) {
+        genError = `budget_blocked: ${e.message}`;
+        console.error(JSON.stringify({ event: "classification_blocked_by_budget", touch_id: touchRowId, message: e.message }));
+      } else {
+        if (!genError) genError = (e as Error).message ?? String(e);
+        console.error(JSON.stringify({ event: "classification_failed", message: genError }));
+      }
     }
 
     // Write the classification back onto the captured row.
@@ -300,6 +361,10 @@ Deno.serve(async (req) => {
       if (elErr) throw elErr;
       elevated = true;
     }
+
+    // B8: fires on EVERY inbound reply, regardless of classification. A negative reply is
+    // still a signal the company is live and may belong in Monday.
+    await raiseMoveToMondayAlert(supabase, contact.company_id ?? null, touchRowId);
 
     console.log(JSON.stringify({ event: "captured_and_classified", touch_id: touchRowId, contact_id: contact.id, reply_classification: cls.reply_classification, elevated }));
     return json(200, {

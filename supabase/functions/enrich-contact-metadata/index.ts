@@ -22,6 +22,7 @@
 
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.45.4";
 import { authorize } from "./_shared/authorize.ts";
+import { callAnthropicWithSentinel, BudgetExceededError } from "./_shared/anthropic-sentinel.ts";
 
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL") ?? "";
 const SERVICE_ROLE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") ?? "";
@@ -103,14 +104,21 @@ async function classify(rows: Row[]): Promise<{ map: Map<string, { function: str
   // Single contact fits comfortably in 300 tokens (per spec); a batch needs more room,
   // so the cap scales with the batch to avoid truncation (~60 tokens/contact + slack).
   const maxTokens = rows.length <= 1 ? 300 : Math.min(2048, 200 + rows.length * 70);
-  const resp = await fetch("https://api.anthropic.com/v1/messages", {
-    method: "POST",
-    headers: { "x-api-key": ANTHROPIC_API_KEY, "anthropic-version": "2023-06-01", "content-type": "application/json" },
-    body: JSON.stringify({ model: ANTHROPIC_MODEL, max_tokens: maxTokens, thinking: { type: "disabled" }, system: SYSTEM_PROMPT, messages: [{ role: "user", content: buildUserPrompt(rows) }] }),
+  // Routed through the sentinel (B3): costed, logged, and refused at the daily ceiling.
+  // SYSTEM_PROMPT here is a single short line, so there is nothing worth caching.
+  const result = await callAnthropicWithSentinel({
+    model: ANTHROPIC_MODEL,
+    max_tokens: maxTokens,
+    thinking: { type: "disabled" },
+    system: SYSTEM_PROMPT,
+    messages: [{ role: "user", content: buildUserPrompt(rows) }],
+    function_name: "enrich-contact-metadata",
+    team_id: PIER_TEAM_ID,
+    request_context: { batch_size: rows.length, purpose: "contact_classification" },
+    supabase,
+    anthropic_api_key: ANTHROPIC_API_KEY,
   });
-  const data = await resp.json();
-  if (!resp.ok) throw new Error(`anthropic_http_${resp.status}: ${JSON.stringify(data).slice(0, 300)}`);
-  const text = ((data?.content ?? []) as Array<{ type: string; text?: string }>).filter((b) => b.type === "text").map((b) => b.text ?? "").join("").trim();
+  const text = result.content;
   let arr: unknown;
   try {
     let t = text.replace(/^```[a-z]*\s*/i, "").replace(/```$/i, "").trim();
@@ -128,7 +136,7 @@ async function classify(rows: Row[]): Promise<{ map: Map<string, { function: str
     if (!SENIORITY_SET.has(sn)) { warnings.push(`seniority "${sn}" not in enum for ${el.id}, defaulted Other`); sn = "Other"; }
     map.set(el.id, { function: fn, seniority: sn });
   }
-  return { map, warnings, usage: data?.usage };
+  return { map, warnings, usage: result.usage };
 }
 
 async function enrichRows(rows: Row[]): Promise<{ updated: number; warnings: string[]; usage: unknown; results: Array<Record<string, unknown>> }> {
@@ -203,6 +211,12 @@ Deno.serve(async (req) => {
     console.log(JSON.stringify({ event: "enrich_one", contact_id: contactId, updated, usage }));
     return json(200, { status: "ok", contact_id: contactId, updated, warnings, result: results[0] ?? null });
   } catch (e) {
+    // Fail closed on budget: 429 so a blocked day is distinguishable from a real fault
+    // and the ingest chain can retry tomorrow rather than treating it as data corruption.
+    if (e instanceof BudgetExceededError) {
+      console.error(JSON.stringify({ event: "enrich_blocked_by_budget", message: e.message }));
+      return json(429, { error: "daily_budget_exceeded", detail: e.message });
+    }
     console.error(JSON.stringify({ event: "handler_error", message: (e as Error).message ?? String(e) }));
     return json(500, { error: "internal_error", detail: (e as Error).message ?? "unknown" });
   }
