@@ -3,16 +3,20 @@
 // and have claude-sonnet-5 write a 250-350 word narrative as structured JSON,
 // upserted into daily_insights (one row per team per day).
 //
-// Auth: shared-secret Bearer (MAKE_SHARED_SECRET), verify_jwt=false.
+// Auth: scoped-secret Bearer (INTERNAL_APP_SECRET; legacy MAKE_SHARED_SECRET still
+// accepted during the transition), verify_jwt=false.
+// Anthropic calls go through the shared sentinel, so this cron's spend is counted by
+// the daily budget gate and logged to api_call_log like every other Pier function.
 // Body (all optional): { "date": "YYYY-MM-DD", "force": true }
 //   - date: override the day to summarise (default = yesterday, Europe/London)
 //   - force: regenerate even if a row already exists for that date
 
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
+import { authorize } from "./_shared/authorize.ts";
+import { callAnthropicWithSentinel, BudgetExceededError } from "./_shared/anthropic-sentinel.ts";
 
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
 const SERVICE_ROLE = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
-const SHARED_SECRET = Deno.env.get("MAKE_SHARED_SECRET")!;
 const ANTHROPIC_KEY = Deno.env.get("ANTHROPIC_API_KEY") ?? "";
 const PIER_TEAM_ID = "ef73c15e-4d6f-4159-bcfa-cc76b5ae4972";
 const MODEL = "claude-sonnet-5";
@@ -40,7 +44,8 @@ const tally = (rows: any[], key: (r: any) => string) => {
 Deno.serve(async (req) => {
   if (req.method === "OPTIONS") return new Response("ok", { headers: cors });
   if (req.method !== "POST") return json(405, { error: "method_not_allowed" });
-  if (req.headers.get("authorization") !== `Bearer ${SHARED_SECRET}`) return json(401, { error: "unauthorized" });
+  // Scoped-secret auth (security audit CRITICAL 2).
+  if (!authorize(req, "internal", "generate-daily-insight")) return json(401, { error: "unauthorized" });
   if (!ANTHROPIC_KEY) return json(500, { error: "ANTHROPIC_API_KEY not configured" });
 
   let body: any = {};
@@ -148,17 +153,32 @@ Return ONLY valid minified JSON (no markdown), exactly this shape:
 activity_by_person, so the UI can turn each mention into a link. Empty array if you named none.
 Total prose across all sections 250-350 words. priority_flags and queue_recommendations: 0-4 items each, terse and specific. Base everything strictly on the facts provided.`;
 
-  const resp = await fetch("https://api.anthropic.com/v1/messages", {
-    method: "POST",
-    headers: { "x-api-key": ANTHROPIC_KEY, "anthropic-version": "2023-06-01", "content-type": "application/json" },
-    body: JSON.stringify({
-      model: MODEL, max_tokens: 1200, thinking: { type: "disabled" },
-      system, messages: [{ role: "user", content: `Activity facts for ${dateStr}:\n${JSON.stringify(facts, null, 2)}` }],
-    }),
-  });
-  if (!resp.ok) return json(502, { error: "anthropic_failed", status: resp.status, detail: (await resp.text()).slice(0, 400) });
-  const ai = await resp.json();
-  let raw = (ai.content?.find((b: any) => b.type === "text")?.text ?? "").trim();
+  // Routed through the shared sentinel instead of a raw fetch. Until this change the
+  // weekday cron was the one Anthropic caller invisible to the fail-closed budget gate:
+  // its Sonnet spend never reached api_call_log, so the daily total the gate reads was
+  // understated and this function could not itself be blocked.
+  let raw = "";
+  try {
+    const result = await callAnthropicWithSentinel({
+      model: MODEL,
+      max_tokens: 1200,
+      thinking: { type: "disabled" },
+      system,
+      messages: [{ role: "user", content: `Activity facts for ${dateStr}:\n${JSON.stringify(facts, null, 2)}` }],
+      function_name: "generate-daily-insight",
+      team_id: PIER_TEAM_ID,
+      request_context: { insight_date: dateStr, purpose: "daily_insight" },
+      supabase,
+      anthropic_api_key: ANTHROPIC_KEY,
+    });
+    raw = result.content.trim();
+  } catch (e) {
+    if (e instanceof BudgetExceededError) {
+      console.error(JSON.stringify({ event: "daily_insight_blocked_by_budget", insight_date: dateStr, message: e.message }));
+      return json(429, { error: "daily_budget_exceeded", detail: e.message });
+    }
+    return json(502, { error: "anthropic_failed", detail: ((e as Error).message ?? String(e)).slice(0, 400) });
+  }
   raw = raw.replace(/^```json\s*/i, "").replace(/^```\s*/i, "").replace(/```\s*$/i, "").trim();
   let content: any;
   try { content = JSON.parse(raw); } catch { return json(502, { error: "parse_failed", raw: raw.slice(0, 500) }); }
