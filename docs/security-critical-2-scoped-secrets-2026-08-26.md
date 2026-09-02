@@ -66,3 +66,88 @@ will keep emitting `deprecated_secret_used` forever.
 Also still outstanding from CRITICAL 1, and more urgent than any of the above: **rotate the
 LinkedIn session cookie and the PhantomBuster API key.** The cookie is retrievable in full
 via `agents_fetch` → `agentObject.originalSessionCookie`.
+
+---
+
+# STATUS 2026-09-02 — code side COMPLETE, deletion still BLOCKED
+
+## Retrofit finished
+
+All remaining functions now use `authorize()`. The five on the list, plus one that was not:
+
+| Function | Class | Version |
+|---|---|---|
+| `update-contact-on-cr-accepted` | inbound | v13 |
+| `capture-and-classify-reply` | inbound | v12 |
+| `enrich-contact-metadata` | internal | v12 |
+| `enrich-company-websites` | internal | v10 |
+| `generate-daily-insight` | internal | v13 |
+| `seed-ea-doc` | internal | v11 |
+
+**`seed-ea-doc` was missing from this document's list.** It accepted only the legacy
+secret, so while it stood, `MAKE_SHARED_SECRET` could never be deleted no matter what
+happened to the other five.
+
+Also fixed: `update-contact-on-cr-accepted` was *sending* `MAKE_SHARED_SECRET` as the bearer
+on its chained call to `generate-draft-from-context`. That single call site produced **all 90**
+`deprecated_secret_used` events in the last 24 hours.
+
+Scoping is confirmed real, not just wired: the two inbound functions **reject**
+`INTERNAL_APP_SECRET` (401) while the internal ones accept it.
+
+## MAKE_SHARED_SECRET is NOT safe to delete. Two concrete blockers.
+
+**1. Both pg_cron jobs send the legacy secret.** Not mentioned anywhere in the original plan.
+
+- jobid 2 `weekly-enrich-company-websites` (Sundays 06:00)
+- jobid 3 `weekday-daily-insight` (weekdays 08:00)
+
+Each hardcodes a 32-char hex literal in its `cron.job.command` — verified not equal to
+`INTERNAL_APP_SECRET` (48 chars). The secret therefore also sits in plaintext in a **database
+table**, which is a second copy nobody was tracking. Deleting `MAKE_SHARED_SECRET` today
+breaks both crons.
+
+Fix (Brad — replace the placeholder, do not commit the real value):
+
+```sql
+SELECT cron.alter_job(2, command := $$
+  SELECT net.http_post(
+    url := 'https://qzfrcfzeiagziqjnfarw.supabase.co/functions/v1/enrich-company-websites',
+    headers := jsonb_build_object('Content-Type','application/json',
+                                  'Authorization','Bearer <INTERNAL_APP_SECRET>'),
+    body := jsonb_build_object('mode','missing','limit',60));
+$$);
+```
+
+…and the same for jobid 3. Better still, read it from Vault rather than embedding a literal.
+
+**2. The 24-hour clock only starts now.** Until today, the two busiest inbound endpoints did
+not use `authorize()` and so logged nothing:
+
+- `update-contact-on-cr-accepted` — **181 requests/24h**
+- `capture-and-classify-reply` — **121 requests/24h**
+
+Both are driven by Make. Their secret has never been observable. From this deploy onward a
+legacy call logs `deprecated_secret_used`, so ~300 events/day will appear if Make is still on
+the old secret. **Zero hits before today is not evidence of anything.**
+
+Unknown, not proven: `upsert-contact-from-sales-nav` received **0 requests** in 24h, so the
+Sales Nav Watcher's secret is untested either way.
+
+## The actual green light
+
+Delete `MAKE_SHARED_SECRET` only when ALL of these hold:
+
+1. Both cron jobs re-pointed at `INTERNAL_APP_SECRET` (above).
+2. The three Make scenarios re-pointed at `INBOUND_WEBHOOK_SECRET`
+   (9589633 Sales Nav Watcher, 9590745 Connection Watcher, 9704543 Inbox Watcher).
+3. A full 24h has elapsed **since those changes**, with the Sales Nav Watcher having actually
+   fired at least once, and this returning zero:
+
+```sql
+-- via the logs explorer, last 24h
+select count(*) from logs where position(event_message, 'deprecated_secret_used') > 0;
+```
+
+Still outstanding from CRITICAL 1 and more urgent than any of this: **rotate the LinkedIn
+session cookie and the PhantomBuster API key.**
