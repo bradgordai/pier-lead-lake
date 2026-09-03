@@ -1,0 +1,16 @@
+-- 055_refusal_gates.sql
+-- C5 refusal gates in ONE place so the drafter, the chase engine and the catch-up scan
+-- cannot drift. Returns 0 rows when the request may proceed, else the highest-precedence
+-- reason. Precedence documented in docs/oli-test-shapes-2026-09.md: consent and territory
+-- gates outrank data-quality gates, so a promise-of-quiet contact never comes back as
+-- "company not deep researched" (which reads as fixable and invites a retry).
+--
+-- Verified live on apply:
+--   P219 chaser, Light triage, empty thread -> company_not_deep_researched  (7 before 8)
+--   P219 connection_request                 -> PROCEED (Oli's board rule: CRs need only Light triage)
+--   Not-relevant contact                    -> dnc_or_opted_out
+--   deep-researched accepted, initial DM    -> PROCEED
+--   deep-researched, Email, Germany         -> channel_illegal_in_market
+--
+-- Full body applied via apply_migration 055_refusal_gates; see that migration in the
+-- Supabase migration history for the canonical text.
