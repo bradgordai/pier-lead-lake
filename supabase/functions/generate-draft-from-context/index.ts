@@ -158,16 +158,21 @@ Deno.serve(async (req) => {
       intent: "They have just accepted your connection request. Write the first message on a brand-new thread." },
     inmail_cold: { channel: "LinkedIn inMail", touch_type: "Initial message",
       intent: "This is a cold InMail to someone you are not connected to. No prior relationship - earn the reply." },
-    chaser_1: { channel: "LinkedIn inMail", touch_type: "Chaser 1",
+    // C1: channel here is a PLACEHOLDER for chasers. It is overridden below from the
+    // contact's connection state: an accepted contact is chased over free LinkedIn DM,
+    // never InMail. Chasing someone we are already connected to over InMail spends a
+    // credit for nothing, which is the bug that caused the 2026-09-03 quarantine.
+    chaser_1: { channel: "LinkedIn DM", touch_type: "Chaser 1",
       intent: "First chase. The earlier message went unanswered. Add one new angle; do not repeat the opener and do not guilt them." },
-    chaser_2: { channel: "LinkedIn inMail", touch_type: "Chaser 2",
+    chaser_2: { channel: "LinkedIn DM", touch_type: "Chaser 2",
       intent: "Second chase. Shorter than the first chase. One concrete, easy-to-answer question." },
-    chaser_3: { channel: "LinkedIn inMail", touch_type: "Chaser 3",
+    chaser_3: { channel: "LinkedIn DM", touch_type: "Chaser 3",
       intent: "Final chase. Brief and gracious - leave the door open and make clear this is the last nudge." },
     follow_up: { channel: "LinkedIn DM", touch_type: "Follow up",
       intent: "They have replied and the conversation is live. Continue it naturally - this is not an opener." },
   };
-  const mapped = TRIGGER_MAP[triggerReason] ?? TRIGGER_MAP["cr_accepted"];
+  // Copied so the C1 channel override below cannot mutate the shared map.
+  const mapped = { ...(TRIGGER_MAP[triggerReason] ?? TRIGGER_MAP["cr_accepted"]) };
 
   try {
     const { data: contact, error: cErr } = await supabase.from("contacts")
@@ -176,23 +181,50 @@ Deno.serve(async (req) => {
     if (cErr) throw cErr;
     if (!contact) return json(404, { error: "contact_not_found" });
 
-    // B6 SUPPRESSION GUARD. A CR-accepted trigger is not consent: the Connection Watcher
-    // fires on acceptance regardless of what Oli has since decided about this contact. If
-    // the contact is opted out, marked not relevant, DNC or archived - or their company is
-    // archived - we must not draft, and silently dropping it would look like the engine
-    // was broken. Raise a reconciliation handover instead so the contradiction is visible.
+    // C5 REFUSAL GATES. Oli requirement 5a: the draft call must be able to return a
+    // REFUSAL, not just a draft. All eight gates live in fn_evaluate_gates (migration 055)
+    // so the drafter, the chase engine and the catch-up scan cannot drift apart - the one
+    // set of rules that must never drift is consent.
     //
-    // "Reconciliation note" has no dedicated table; agent_handover IS that mechanism
-    // (to_agent 'reconciliation'), so this reuses it rather than inventing a table.
-    const suppressStatuses = new Set(["Not relevant", "Opted out", "Do not contact"]);
-    const suppressReasons: string[] = [];
-    if (suppressStatuses.has(String(contact.outreach_status ?? ""))) suppressReasons.push(`outreach_status=${contact.outreach_status}`);
-    if (contact.do_not_contact === true) suppressReasons.push("do_not_contact=true");
-    if (contact.archived_at) suppressReasons.push("contact_archived");
-    if (suppressReasons.length > 0) {
-      if (!dryRun) await raiseReconciliationNote(contact.id, triggerReason, suppressReasons, contact);
-      console.log(JSON.stringify({ event: "draft_suppressed", contact_id: contact.id, reasons: suppressReasons, trigger_reason: triggerReason, dry_run: dryRun }));
-      return json(200, { status: "suppressed", reasons: suppressReasons, contact_id: contact.id, dry_run: dryRun });
+    // C1: an accepted contact is chased over FREE LinkedIn DM. Resolved before the gate
+    // call because the per-channel allowance depends on which channel we would actually use.
+    const isChaser = triggerReason.startsWith("chaser_");
+    const chaserChannel = String(contact.connection_status ?? "") === "Accepted"
+      ? "LinkedIn DM" : "LinkedIn inMail";
+    if (isChaser) mapped.channel = chaserChannel;
+
+    const requested = triggerReason === "follow_up" ? "reply"
+                    : isChaser ? "chaser"
+                    : "initial_message";
+
+    const { data: gateRows, error: gateErr } = await supabase.rpc("fn_evaluate_gates", {
+      p_team_id: PIER_TEAM_ID, p_contact_id: contact.id,
+      p_channel: mapped.channel, p_requested: requested,
+    });
+    if (gateErr) throw gateErr;
+    const gate = (gateRows ?? [])[0];
+    if (gate) {
+      // A refusal is a first-class RESULT, not an error: HTTP 200 with refused:true.
+      // Lovable renders reason_human on the card in place of a draft.
+      if (!dryRun) {
+        await supabase.from("refusals").insert({
+          team_id: PIER_TEAM_ID, contact_id: contact.id, company_id: contact.company_id ?? null,
+          reason_code: gate.reason_code, reason_human: gate.reason_human,
+          channel: mapped.channel, requested,
+          context: { ...(gate.context ?? {}), trigger_reason: triggerReason },
+        });
+        // Only a consent contradiction deserves a human's attention: the CR-accepted
+        // trigger says engage while the record says stop. Data-quality refusals are
+        // self-explanatory and would just be noise in the reconciliation queue.
+        if (gate.reason_code === "dnc_or_opted_out" || gate.reason_code === "promise_of_quiet") {
+          await raiseReconciliationNote(contact.id, triggerReason, [gate.reason_code], contact);
+        }
+      }
+      console.log(JSON.stringify({ event: "draft_refused", contact_id: contact.id, reason_code: gate.reason_code, trigger_reason: triggerReason, channel: mapped.channel, dry_run: dryRun }));
+      return json(200, {
+        refused: true, reason_code: gate.reason_code, reason_human: gate.reason_human,
+        contact_id: contact.id, channel: mapped.channel, requested, dry_run: dryRun,
+      });
     }
 
     const sender = await resolveSender(supabase, requestingUser, contact.owner_user_id ?? null);
@@ -228,13 +260,26 @@ Deno.serve(async (req) => {
       company = co ?? null;
     }
     if (company?.archived_at) {
-      if (!dryRun) await raiseReconciliationNote(contact.id, triggerReason, ["company_archived"], contact);
-      console.log(JSON.stringify({ event: "draft_suppressed", contact_id: contact.id, reasons: ["company_archived"], trigger_reason: triggerReason, dry_run: dryRun }));
-      return json(200, { status: "suppressed", reasons: ["company_archived"], contact_id: contact.id, dry_run: dryRun });
+      // Archived company maps onto the closed reason-code set as dnc_or_opted_out: the
+      // company is out of scope, so the contact is excluded from outreach.
+      if (!dryRun) {
+        await supabase.from("refusals").insert({
+          team_id: PIER_TEAM_ID, contact_id: contact.id, company_id: contact.company_id ?? null,
+          reason_code: "dnc_or_opted_out",
+          reason_human: `${company.company_name ?? "The company"} is archived, so this contact is out of scope.`,
+          channel: mapped.channel, requested: triggerReason,
+          context: { company_archived_at: company.archived_at },
+        });
+        await raiseReconciliationNote(contact.id, triggerReason, ["company_archived"], contact);
+      }
+      console.log(JSON.stringify({ event: "draft_refused", contact_id: contact.id, reason_code: "dnc_or_opted_out", detail: "company_archived", dry_run: dryRun }));
+      return json(200, { refused: true, reason_code: "dnc_or_opted_out",
+        reason_human: `${company.company_name ?? "The company"} is archived, so this contact is out of scope.`,
+        contact_id: contact.id, dry_run: dryRun });
     }
 
     const { data: prevRows } = await supabase.from("outreach_log")
-      .select("touch_date, channel, touch_type, message_body, subject_line, reply_content, sent_by")
+      .select("touch_date, channel, touch_type, message_body, sent_body, subject_line, reply_content, sent_by")
       .eq("team_id", PIER_TEAM_ID).eq("contact_id", contactId).order("touch_date", { ascending: true }).limit(50);
     // Only the last 30 days count as "live" thread context; older messages are summarised as a
     // re-engagement note so stale threads never derail the draft (older = stale, ignore the detail).
@@ -256,7 +301,9 @@ Deno.serve(async (req) => {
         return `- ${date} Reply from ${them}: ${body}`;
       }
       const subj = r.subject_line ? `[${r.subject_line}] ` : "";
-      const body = String(r.message_body ?? "").slice(0, 500);
+      // C6: prefer what was ACTUALLY sent (including edits) over the working draft,
+      // so the no-repetition check compares against reality.
+      const body = String(r.sent_body ?? r.message_body ?? "").slice(0, 500);
       // Historical touches are attributed to whoever actually sent them, not to the
       // current requester - otherwise Jack would appear to have sent Oli's old messages.
       const who = String(r.sent_by ?? "").trim() || "us";
