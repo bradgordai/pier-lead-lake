@@ -1,6 +1,30 @@
 # State snapshot — Batch C, end of Phase 0 + Phase 1 (schema)
 
-2026-09-03 ~18:50 BST. HEAD `7f6f7f7`. **Phase 2 (the migration) has NOT run.**
+2026-09-03 22:40 BST. **Phase 2 (the migration) has NOT run.**
+
+## T1 COMPLETE - drafter v24 deployed and verified
+
+Production now runs the C5 refusal gates and the C1 free-DM route. Repo and production are
+back in step. Five dry-run cases, all as specified:
+
+| Case | Result |
+|---|---|
+| PoQ contact P081, initial DM | REFUSED `promise_of_quiet` |
+| Parked UK contact, initial DM | REFUSED `contact_parked` |
+| Deep-researched ACCEPTED, initial DM | PROCEEDED - draft + narrative + 3 guardrails |
+| Light-triage chaser | REFUSED `company_not_deep_researched` |
+| **Chaser on ACCEPTED contact** | **PROCEEDED on `LinkedIn DM`, not InMail** |
+
+The free-DM route is confirmed: chasers for connected contacts no longer spend an InMail
+credit. That was the bug behind the 06:15 quarantine.
+
+The guardrails are doing real work rather than boilerplate - on the chaser they came back
+with "do not repeat the Nokia licence / own-brand transition framing" and "do not mention the
+previous message or the lack of reply", derived from the actual prior thread.
+
+Caching confirmed live in the same run: the cold call cost GBP 0.1193, the warm one
+GBP 0.0155 with 57,080 tokens read from cache.
+
 
 ## Phase 0 — quarantine: COMPLETE except the backup precondition
 
