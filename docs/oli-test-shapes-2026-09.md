@@ -102,3 +102,18 @@ unaffected per Oli's board rule), the catch-up queue will return **far more refu
 drafts**. That is the gate working as specified, but it sits against Oli's "happy with the
 full backlog" expectation, and he should see the split before the test day rather than
 discover it in the queue.
+
+## Results, 2026-09-04 (post-migration, drafter v26, all dry runs)
+
+| # | Contact | Result |
+|---|---|---|
+| 1 | P269 Anthony, GreenIT Ireland, EN | DRAFT (LinkedIn DM, warm cache, GBP 0.0146) |
+| 2 | P037 Elena Panova, A1 Telekom | DRAFT, Chaser 1 on LinkedIn DM (free route) |
+| 3 | P227 Bram Weijschede, Fixje (3 DM chasers) | REFUSED allowance_exhausted, "3 of 3 sent" |
+| 3 | P050 Vittorio Buonfiglio, MediaMarkt (1 InMail chaser) | REFUSED allowance_exhausted, "1 of 1 sent" |
+| 4 | P198 Dennis Backofen | REFUSED promise_of_quiet (first message and chaser) |
+| 5 | P001 Peter Stolzlederer (du) / P045 Alejandro Plater (Sie), both A1 | two DRAFTS, register preserved in each |
+| 6 | P706 Florian Pfeiffer, Sparhandy / P297 Alessandro P., TrenDevice | REFUSED thread_text_missing |
+
+Shape 5 now works because migration 058/Phase 2 imported the workbook Formality column onto
+`contacts.formality` (359 rows) and the drafter passes it as an explicit register line.
