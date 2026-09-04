@@ -1,0 +1,12 @@
+-- 061: A2 visibility model + A3 security fixes. Applied 2026-09-04 via apply_migration;
+-- canonical text in the Supabase migration history (061_visibility_model_and_security_fixes).
+-- Summary:
+--   team_settings.members_see_all_leads (default true) per Oli's ruling: data tabs show all
+--     leads; work surfaces filter to owner for members, admins get an owner toggle.
+--   Brad = admin, Oli + Jack = member.  fn_task_scope() returns the caller's role/team/flag.
+--   eurefas_members_select / pier_pipeline_select: auth.uid() IS NOT NULL replaced by
+--     EXISTS (SELECT 1 FROM fn_user_teams()).
+--   fn_capture_dq_snapshot: EXECUTE revoked from authenticated/anon (cron-only).
+--   fn_user_teams: stays SECURITY DEFINER + executable by authenticated (RLS depends), documented.
+--   SET search_path on fn_evaluate_gates / fn_chase_candidates / fn_chase_exhausted.
+--   mig_* migration helpers dropped.
