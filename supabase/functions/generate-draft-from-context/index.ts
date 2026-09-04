@@ -144,6 +144,11 @@ Deno.serve(async (req) => {
   const triggerReason = String(body?.trigger_reason ?? "cr_accepted").trim();
   const requestingUser = String(body?.requesting_user ?? "").trim();
   const dryRun = body?.dry_run === true;
+  // C1/T2: the chase engine sets this on the LAST chaser permitted on a route. On the
+  // DM route that is chaser 3, whose intent is already exit-shaped; on the InMail route
+  // it is chaser 1, because the cap is 1 - so without this the final paid InMail would
+  // go out with an ask, against EA doctrine.
+  const exitShape = body?.exit_shape === true;
   if (!contactId) return json(400, { error: "missing_required_fields", detail: "contact_id required" });
 
   // Bundle B T4: the trigger decides which kind of touch this draft is, which in turn
@@ -171,8 +176,14 @@ Deno.serve(async (req) => {
     follow_up: { channel: "LinkedIn DM", touch_type: "Follow up",
       intent: "They have replied and the conversation is live. Continue it naturally - this is not an opener." },
   };
-  // Copied so the C1 channel override below cannot mutate the shared map.
+  // Copied so the C1 channel/intent overrides below cannot mutate the shared map.
   const mapped = { ...(TRIGGER_MAP[triggerReason] ?? TRIGGER_MAP["cr_accepted"]) };
+  if (exitShape) {
+    mapped.intent = "FINAL touch on this route. This is the last message that will be sent, "
+      + "so it must leave the door open and make no ask: no question, no meeting request, no "
+      + "call to action of any kind. Brief and gracious. Say plainly that you will leave it "
+      + "with them, and make it easy for them to come back later on their own terms.";
+  }
 
   try {
     const { data: contact, error: cErr } = await supabase.from("contacts")
