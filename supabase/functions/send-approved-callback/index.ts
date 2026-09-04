@@ -30,6 +30,22 @@
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.45.4";
 import { authorize } from "./_shared/authorize.ts";
 
+// Same normalisation as send-approved-draft, so a backfilled sent_body matches what a
+// dispatch-time freeze would have stored. LinkedIn messages are plain text.
+const stripHtml = (s: string) =>
+  (s ?? "")
+    .replace(/<br\s*\/?>/gi, "\n")
+    .replace(/<\/p>/gi, "\n\n")
+    .replace(/<[^>]+>/g, "")
+    .replace(/&nbsp;/g, " ")
+    .replace(/&amp;/g, "&")
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;/g, "'")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL") ?? "";
 const SERVICE_ROLE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") ?? "";
 const PIER_TEAM_ID = Deno.env.get("PIER_TEAM_ID") ?? "";
@@ -123,7 +139,7 @@ Deno.serve(async (req) => {
 
   try {
     const { data: row, error: fErr } = await supabase.from("outreach_log")
-      .select("id, contact_ref, send_status, draft_status")
+      .select("id, contact_ref, send_status, draft_status, sent_body, message_body")
       .eq("team_id", PIER_TEAM_ID).eq("phantom_run_id", runId).limit(1).maybeSingle();
     if (fErr) throw fErr;
     if (!row) {
@@ -157,8 +173,14 @@ Deno.serve(async (req) => {
     }
 
     // --- exit 0 with a populated result: a real send ---
+    // C6 / T3: the dispatcher froze sent_body at launch. The callback CONFIRMS it and never
+    // overwrites it. If a row was dispatched before the freeze shipped, sent_body is still
+    // NULL here; fill it from the body once, stripped the same way the dispatcher strips
+    // it, so no Sent row is left without a record of what went out.
+    const confirmedBody = row.sent_body ?? (stripHtml(String(row.message_body ?? "")) || null);
     const { error: uErr } = await supabase.from("outreach_log")
-      .update({ send_status: "Sent", draft_status: "sent", sent_at_actual: new Date().toISOString(), send_error: null })
+      .update({ send_status: "Sent", draft_status: "sent", sent_at_actual: new Date().toISOString(), send_error: null,
+                sent_body: confirmedBody })
       .eq("id", row.id).eq("team_id", PIER_TEAM_ID);
     if (uErr) throw uErr;
     await logAudit("send_completed", row.id, `Sent via LinkedIn (${results.length} recipient${results.length === 1 ? "" : "s"}).`, { phantom_run_id: runId, exit_code: 0, results: results.length });

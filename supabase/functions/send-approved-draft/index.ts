@@ -3,9 +3,9 @@
 // Pushes ONE approved outreach_log draft out to LinkedIn via PhantomBuster.
 // Called by the Lovable "Send now" button with { outreach_log_id }.
 //
-// Auth (Brad's decision 2026-08-26): reuses MAKE_SHARED_SECRET rather than a new
-// SEND_APPROVED_SECRET, so there is one shared secret across every Pier Edge Function
-// and the Lovable server functions hardcode it the same way regenerateDraftsFn does.
+// Auth: scoped bearer via ./_shared/authorize.ts, caller class "internal" (Lovable server
+// function). Accepts INTERNAL_APP_SECRET, and MAKE_SHARED_SECRET during the transition with
+// a deprecation warning. Security audit CRITICAL 2.
 //
 // Security / conventions (mirrors capture-and-classify-reply):
 //   - service_role builds the client at boot only; every query is scoped to PIER_TEAM_ID.
@@ -15,7 +15,7 @@
 //     straight back. The cookie round-trips untouched and never appears in a log line.
 //
 // Schema reconciliations vs the Send-Approved spec (verified against the live phantoms
-// 2026-08-26 — the spec's assumed argument shape is wrong for BOTH phantoms):
+// 2026-08-26 - the spec's assumed argument shape is wrong for BOTH phantoms):
 //   - Message Sender (5691059901018698, "LinkedIn Message Sender.js") takes
 //     `spreadsheetUrl` (a single profile URL or a sheet), NOT a `profileUrls` array.
 //   - Auto Connect (7500783933729451, "LinkedIn Auto Connect.js") takes
@@ -39,8 +39,7 @@ const PHANTOMBUSTER_API_KEY = Deno.env.get("PHANTOMBUSTER_API_KEY") ?? "";
 // Set TEST_MODE="false" explicitly to go live.
 const TEST_MODE = (Deno.env.get("TEST_MODE") ?? "true").toLowerCase() !== "false";
 
-// Exact allowed test recipient. Compared with startsWith after normalising the trailing
-// slash. This is the last line of defence before a launch.
+// Exact allowed test recipient. This is the last line of defence before a launch.
 const BRAD_TEST_URL = "https://www.linkedin.com/in/bradley-gordon-749861170";
 
 const PHANTOM_DM = "5691059901018698";  // Pier LinkedIn Message Sender
@@ -122,7 +121,7 @@ Deno.serve(async (req) => {
     if (channel === "LinkedIn inMail") return json(200, { status: "inmail_not_wired", detail: "InMail send is a separate build", test_mode: TEST_MODE });
     if (channel !== "LinkedIn DM" && channel !== "LinkedIn CR") return json(200, { status: "channel_not_supported", channel, test_mode: TEST_MODE });
 
-    // Capacity guard runs BEFORE any launch, and applies in TEST_MODE too — the platform
+    // Capacity guard runs BEFORE any launch, and applies in TEST_MODE too - the platform
     // limit is per LinkedIn account and a test send consumes real quota.
     if (channel === "LinkedIn DM") {
       const today = new Date().toISOString().slice(0, 10);
@@ -211,8 +210,15 @@ Deno.serve(async (req) => {
     }
 
     // In flight. draft_status stays 'approved' until the callback confirms delivery.
+    //
+    // C6 / T3 (Oli requirement 5b): freeze the text that was ACTUALLY handed to the phantom
+    // into sent_body at dispatch. messageText is message_body after Oli's edits and after
+    // HTML stripping, i.e. exactly the characters LinkedIn receives. message_body remains
+    // the working draft; sent_body is the immutable record the drafter's no-repetition
+    // check reads. A blank CR has no text, so sent_body stays NULL for it.
     const { error: uErr } = await supabase.from("outreach_log")
-      .update({ send_status: "Scheduled", phantom_run_id: containerId, sent_at_actual: null, send_error: null })
+      .update({ send_status: "Scheduled", phantom_run_id: containerId, sent_at_actual: null, send_error: null,
+                sent_body: messageText || null })
       .eq("id", rowId).eq("team_id", PIER_TEAM_ID);
     if (uErr) throw uErr;
 
