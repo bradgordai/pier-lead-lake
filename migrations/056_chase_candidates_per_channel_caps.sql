@@ -1,0 +1,104 @@
+-- 056_chase_candidates_per_channel_caps.sql
+-- Batch C / T2. Applied 2026-09-04 13:13 UTC via apply_migration; this file is the repo
+-- copy of the applied text (the T2 commit shipped the engine but omitted the SQL file).
+--
+-- fn_chase_candidates now applies PER-CHANNEL caps and names the channel the chaser would
+-- actually use, so the engine and fn_evaluate_gates agree:
+--   accepted_chase   -> FREE LinkedIn DM,  cap dm_chaser_cap     (3)
+--   cr_not_accepted  -> LinkedIn inMail,   cap inmail_chaser_cap (1)  initial + one chaser
+-- Sent chasers are counted per channel; counting across channels would let a DM chaser eat
+-- the InMail allowance. promise_of_quiet and Parked are excluded at source so those contacts
+-- never reach a model call. DROP was required because the return type changed; safe because
+-- the cron was paused and the only caller was replaced in the same step.
+
+DROP FUNCTION IF EXISTS public.fn_chase_candidates(uuid, integer);
+
+CREATE OR REPLACE FUNCTION public.fn_chase_candidates(p_team_id uuid, p_limit integer DEFAULT 25)
+ RETURNS TABLE(contact_id uuid, company_id uuid, chaser_number integer, route text, channel text, cap integer, is_final boolean, last_outbound date, days_since integer, priority text, connection_status text)
+ LANGUAGE sql
+ STABLE
+AS $function$
+  WITH settings AS (
+    SELECT coalesce(chase_interval_days, 7) AS interval_days,
+           coalesce(dm_chaser_cap, 3)       AS dm_cap,
+           coalesce(inmail_chaser_cap, 1)   AS inmail_cap
+    FROM public.team_settings WHERE team_id = p_team_id
+    UNION ALL SELECT 7, 3, 1
+    LIMIT 1
+  ),
+  outbound AS (
+    SELECT o.contact_id,
+           max(o.touch_date) FILTER (WHERE o.touch_type::text <> 'Connection request') AS last_msg,
+           max(o.touch_date) FILTER (WHERE o.touch_type::text =  'Connection request') AS last_cr,
+           count(*) FILTER (WHERE o.touch_type::text LIKE 'Chaser %' AND o.channel::text = 'LinkedIn DM')     AS dm_chasers,
+           count(*) FILTER (WHERE o.touch_type::text LIKE 'Chaser %' AND o.channel::text = 'LinkedIn inMail') AS inmail_chasers
+    FROM public.outreach_log o
+    WHERE o.team_id = p_team_id
+      AND o.touch_type::text <> 'Reply'
+      AND o.send_status::text = 'Sent'
+    GROUP BY o.contact_id
+  ),
+  inbound AS (
+    SELECT o.contact_id, max(o.touch_date) AS last_reply
+    FROM public.outreach_log o
+    WHERE o.team_id = p_team_id AND o.touch_type::text = 'Reply'
+    GROUP BY o.contact_id
+  ),
+  pending AS (
+    SELECT DISTINCT o.contact_id
+    FROM public.outreach_log o
+    WHERE o.team_id = p_team_id
+      AND o.draft_status::text = 'pending_review'
+      AND o.agent_produced
+  ),
+  base AS (
+    SELECT
+      c.id AS contact_id,
+      c.company_id,
+      CASE WHEN c.connection_status::text = 'Accepted' THEN 'accepted_chase' ELSE 'cr_not_accepted' END AS route,
+      CASE WHEN c.connection_status::text = 'Accepted' THEN 'LinkedIn DM' ELSE 'LinkedIn inMail' END AS channel,
+      CASE WHEN c.connection_status::text = 'Accepted' THEN s.dm_cap ELSE s.inmail_cap END AS cap,
+      CASE WHEN c.connection_status::text = 'Accepted'
+           THEN coalesce(ob.dm_chasers, 0) ELSE coalesce(ob.inmail_chasers, 0) END AS chasers_on_channel,
+      CASE WHEN c.connection_status::text = 'Accepted' THEN ob.last_msg ELSE ob.last_cr END AS last_outbound,
+      ib.last_reply,
+      s.interval_days,
+      co.priority::text AS priority,
+      c.connection_status::text AS connection_status
+    FROM public.contacts c
+    JOIN settings s ON true
+    LEFT JOIN public.companies co ON co.id = c.company_id
+    LEFT JOIN outbound ob ON ob.contact_id = c.id
+    LEFT JOIN inbound  ib ON ib.contact_id = c.id
+    WHERE c.team_id = p_team_id
+      AND c.archived_at IS NULL
+      AND coalesce(c.do_not_contact, false) = false
+      AND coalesce(c.promise_of_quiet, false) = false
+      AND (co.id IS NULL OR co.archived_at IS NULL)
+      AND c.outreach_status::text NOT IN ('Do not contact','Not relevant','Opted out','Left company','Meeting booked','Parked')
+      AND (c.cooldown_until IS NULL OR c.cooldown_until <= CURRENT_DATE)
+      AND (c.chase_scheduled_for IS NULL OR c.chase_scheduled_for <= CURRENT_DATE)
+      AND c.id NOT IN (SELECT contact_id FROM pending)
+  )
+  SELECT
+    b.contact_id,
+    b.company_id,
+    (b.chasers_on_channel + 1)::int,
+    b.route,
+    b.channel,
+    b.cap,
+    ((b.chasers_on_channel + 1) >= b.cap),
+    b.last_outbound,
+    (CURRENT_DATE - b.last_outbound)::int,
+    b.priority,
+    b.connection_status
+  FROM base b
+  WHERE b.chasers_on_channel < b.cap
+    AND b.last_outbound IS NOT NULL
+    AND b.last_outbound <= CURRENT_DATE - b.interval_days
+    AND (b.last_reply IS NULL OR b.last_reply < b.last_outbound)
+  ORDER BY
+    CASE b.priority WHEN 'P0' THEN 0 WHEN 'P1' THEN 1 WHEN 'P2' THEN 2 WHEN 'P3' THEN 3 ELSE 4 END,
+    b.last_outbound ASC
+  LIMIT p_limit;
+$function$;
