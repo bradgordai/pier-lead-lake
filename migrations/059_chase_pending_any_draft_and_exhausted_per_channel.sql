@@ -1,0 +1,7 @@
+-- 059: two chase-engine alignments the migration needs.
+-- 1. A contact with ANY pending_review draft (Oli's legacy workbook drafts included, which
+--    are not agent_produced) is not chased until that draft is actioned.
+-- 2. fn_chase_exhausted applies the per-channel caps (C1) instead of the deprecated
+--    single chaser_cap. Applied 2026-09-04 via apply_migration; canonical text lives in
+--    the Supabase migration history (059_chase_pending_any_draft_and_exhausted_per_channel).
+--    Both functions are otherwise identical to 056 / 053.
