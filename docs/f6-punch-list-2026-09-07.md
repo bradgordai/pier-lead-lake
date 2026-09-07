@@ -94,3 +94,11 @@ and under the Conversation section of the draft editor. updateContactFn EDITABLE
 getDraftContextFn selects it.
 Full circle: operator writes above the marker; drafter v28 and classifier v15 refresh below it; all three model
 calls read both sections plus next_action and background_notes under the two stated rules.
+
+## F6.8 legacy provenance badges
+Lovable commit 6be8d5b4. src/components/shared/LegacyBadge.tsx renders a 16px "L" (title/aria "Imported from
+workbook") only when outreach_log.migrated_legacy === true; AI-generated and in-app items get nothing.
+migrated_legacy added to the thread, contact-conversation, company-outreach and Today pending-sample selects.
+Rendered in: Outreach thread list + conversation cards, draft editor header + its conversation, both kanbans,
+OutreachTable, contact Conversation bubbles (light variant on the outbound bubble), company outreach list,
+Today pending-drafts samples.
