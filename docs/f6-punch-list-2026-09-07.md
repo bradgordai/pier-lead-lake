@@ -30,3 +30,28 @@ T226 and T700 have an inline placeholder bracket that is part of the sent text a
   annotation_split_outbound 149, ai_edit_tag_stripped 5, annotation_only_body_nulled 3, inline_bracket_left 2.
 - Examples: Marco Stiemert T944 now ends at "Beste Grüße, Marco"; Mario Opua T675 ends at "VG, Oliver",
   the BACKFILLED and Chaser #1 notes sit in his background notes.
+
+## F6.1 pending count drift (third occurrence)
+Lovable commit bb5f7048. Root cause: the Outreach Pulse "Pending review" tile counted raw draft_status rows
+(71) while Today used the canon (67: contact not soft-deleted, company not archived).
+- src/lib/pendingDrafts.ts now carries a boxed banner: EVERY pending count MUST come through
+  fetchPendingReviewDrafts / countPendingReviewDrafts. New countPendingReviewDrafts(supabase, ownerFilter).
+- Routed through the helper: Outreach tab badge, Pulse tile + collapsed summary, Pulse volume bar
+  (archived rows dropped), the Pending Review tab LIST itself (total = canon), Automation Health
+  "Drafts to approve" (its old exemption removed), Today action-queue cards.
+- Audit of the rest of the tree: remaining pending_review mentions are enums, pills, filters and the
+  thread views' "hide unsent draft" predicate, not counts.
+
+## F6.6 drafter context + F6.7b AI-maintained conversation notes (backend)
+- Migration 064 adds contacts.conversation_summary (text). Format: operator bullets, then the marker line
+  `--- AI state of play (auto-maintained, edit above this line) ---`, then AI bullets. Automation only
+  ever rewrites the block below the marker (supabase/functions/_shared/conversation-summary.ts).
+- generate-draft-from-context v28: CONTACT NOTES block in the user prompt (next_action + due date,
+  background_notes, operator conversation notes, AI state of play) with the two rules stated in the prompt
+  text: gates always override notes; note dates matter (past-dated instructions are history). Also in the
+  drafting directive. Model now returns state_of_play[]; after the draft row is inserted the AI section of
+  conversation_summary is refreshed (non-fatal on failure).
+- ai-edit-draft v3: same CONTACT NOTES block and rule in the edit directive. Read-only, does not write notes.
+- capture-and-classify-reply v15: CONTACT NOTES block in the classification prompt, state_of_play[] in the
+  JSON, AI section refreshed after classification (stamp "date, reply classified: <class>").
+- Neither drafter previously included next_action or background_notes at all, so F6.6 was an add, not a verify.

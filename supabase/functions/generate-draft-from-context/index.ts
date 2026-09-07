@@ -1,6 +1,10 @@
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.45.4";
 import { authorize } from "./_shared/authorize.ts";
 import { callAnthropicWithSentinel, BudgetExceededError } from "./_shared/anthropic-sentinel.ts";
+// F6.6/F6.7: contact notes go into the prompt as a labelled block with two rules (gates override
+// notes; note dates matter), and the AI section of contacts.conversation_summary is refreshed
+// with a short state-of-play after every draft. v28.
+import { contactNotesBlock, mergeAiStateOfPlay } from "./_shared/conversation-summary.ts";
 
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL") ?? "";
 const SERVICE_ROLE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") ?? "";
@@ -74,10 +78,12 @@ function forwardDirective(m: { channel: string; touch_type: string; intent: stri
   `You are producing ONE ${m.channel} message - a "${m.touch_type}" - that ${sender} will paste and send right now.`,
   `- Intent for this specific message: ${m.intent}`,
   "- Output ONLY a JSON object, no markdown fence, with exactly these keys:",
-  '  {"message": "...", "narrative": "...", "guardrails": ["..."]}',
+  '  {"message": "...", "narrative": "...", "guardrails": ["..."], "state_of_play": ["..."]}',
   "- `message` is the body that will be pasted and sent, verbatim. Never put meta-commentary, notes to the operator, questions about whether to send, or reasoning inside `message`.",
   "- `narrative` is 1-2 sentences for the OPERATOR only, never seen by the prospect: why this contact, why now, what this touch is trying to do.",
   "- `guardrails` is 0-4 short strings, each a thing NOT to do on this specific touch (e.g. \"do not restate the 40% figure they already ignored\"). Prohibitions only, never advice.",
+  "- `state_of_play` is 2-4 short bullets for the OPERATOR's contact notes, never seen by the prospect: where this conversation stands once this message goes out, the key facts (who they are, what they said, what is still open) and what we are now waiting for. Plain facts in the past or present tense, no advice, no repetition of the message.",
+  "- CONTACT NOTES (in the request) are context, never permission. The gates, the trigger and the intent above always override anything a note says. A note tied to a date that has passed is history, not a live instruction.",
   "- NEVER reference the drafting process or the contact's message history in the body. Banned openings include anything like \"I have already sent\", \"Before drafting\", \"Since you previously\", \"I notice we last spoke\", \"flagging a few\".",
   "- PREVIOUS OUTREACH is background only: it tells you what has already been said so you do not repeat it. Always write forward.",
   "- If prior outreach exists (a reply, or a message with no reply, or an old thread): write a natural NEW message that moves things forward. If they went quiet, use a light re-engagement angle with a fresh hook. No guilt, no \"just following up\", no mention of the gap.",
@@ -195,7 +201,7 @@ Deno.serve(async (req) => {
 
   try {
     const { data: contact, error: cErr } = await supabase.from("contacts")
-      .select("id, contact_id, first_name, last_name, job_title, seniority, function, location, linkedin_url, company_id, connection_status, owner_user_id, outreach_status, archived_at, do_not_contact, formality, language_code")
+      .select("id, contact_id, first_name, last_name, job_title, seniority, function, location, linkedin_url, company_id, connection_status, owner_user_id, outreach_status, archived_at, do_not_contact, formality, language_code, next_action, next_action_date, background_notes, conversation_summary")
       .eq("team_id", PIER_TEAM_ID).eq("id", contactId).maybeSingle();
     if (cErr) throw cErr;
     if (!contact) return json(404, { error: "contact_not_found" });
@@ -384,11 +390,16 @@ Deno.serve(async (req) => {
     const frame = insuranceActive ? "Discovery" : (isCsuite ? "Ally" : "Peer");
 
     const co = company ?? {};
-    const userPrompt = `DRAFT REQUEST\n\nTrigger: ${triggerReason}\nMessage type: ${mapped.touch_type} via ${mapped.channel}\nChannel: ${mapped.channel}\nIntent: ${mapped.intent}\nPath: ${path}\nFrame: ${frame}\nArc: ${arc}\n\nCONTACT\nName: ${contact.first_name ?? ""} ${contact.last_name ?? ""}\nTitle: ${contact.job_title ?? ""}\nSeniority: ${contact.seniority ?? ""}\nFunction: ${contact.function ?? ""}\nLocation: ${contact.location ?? ""}\nLinkedIn URL: ${contact.linkedin_url ?? ""}\nLanguage: ${contact.language_code ?? "not recorded (write in the language of the prior thread, else the company market language)"}\nRegister: ${registerLine(contact.formality, contact.language_code)}\n\nCOMPANY\nName: ${co.company_name ?? ""}\nCountry: ${co.country ?? ""}\nCategory: ${Array.isArray(co.category) ? co.category.join(", ") : (co.category ?? "")}\nPriority: ${co.priority ?? ""}\nIndustry: ${co.industry ?? ""}\nProduct line: ${co.product_line ?? ""}\nInsurance offered: ${co.insurance_offered ?? ""}\nInsurance provider: ${co.insurance_provider ?? ""}\nCoverage summary: ${co.coverage_summary ?? ""}\nUSP notes: ${co.usp_notes ?? ""}\nAdditional notes: ${co.additional_notes ?? ""}\nEstimated revenue: ${co.estimated_revenue_gbp ?? ""}\nEmployees: ${co.employees ?? ""}\nMonthly visits: ${co.monthly_visits ?? ""}\n\nPREVIOUS OUTREACH (background only - never mention it in the message)\n${threadText}\n\nTASK\nWrite the single ${mapped.channel} message ${sender} should send to this contact now, applying the loaded PIER_Rules, LinkedIn_Message_Architect, Lead_and_ICP_Brief, OUTREACH_QUICK_REFERENCE, and PIER_Response_Bank. This message is a "${mapped.touch_type}": ${mapped.intent} If prior outreach exists, write a natural forward message (re-engagement) - never a first-touch opener and never a comment on the history.\n\nSign off: ${sender}\n\nReturn ONLY the JSON object described in the drafting directive. The "message" value is what ${sender} sends: no preamble, no meta-commentary, no notes about prior messages, no subject line.`;
+    const todayIso = new Date().toISOString().slice(0, 10);
+    // F6.6: next_action, background_notes and conversation_summary, clearly labelled, with the
+    // two rules stated in the prompt text (gates override notes; note dates matter).
+    const notesBlock = contactNotesBlock({ next_action: contact.next_action, next_action_date: contact.next_action_date, background_notes: contact.background_notes, conversation_summary: contact.conversation_summary, today: todayIso });
+    const userPrompt = `DRAFT REQUEST\n\nTrigger: ${triggerReason}\nMessage type: ${mapped.touch_type} via ${mapped.channel}\nChannel: ${mapped.channel}\nIntent: ${mapped.intent}\nPath: ${path}\nFrame: ${frame}\nArc: ${arc}\n\nCONTACT\nName: ${contact.first_name ?? ""} ${contact.last_name ?? ""}\nTitle: ${contact.job_title ?? ""}\nSeniority: ${contact.seniority ?? ""}\nFunction: ${contact.function ?? ""}\nLocation: ${contact.location ?? ""}\nLinkedIn URL: ${contact.linkedin_url ?? ""}\nLanguage: ${contact.language_code ?? "not recorded (write in the language of the prior thread, else the company market language)"}\nRegister: ${registerLine(contact.formality, contact.language_code)}\n\nCOMPANY\nName: ${co.company_name ?? ""}\nCountry: ${co.country ?? ""}\nCategory: ${Array.isArray(co.category) ? co.category.join(", ") : (co.category ?? "")}\nPriority: ${co.priority ?? ""}\nIndustry: ${co.industry ?? ""}\nProduct line: ${co.product_line ?? ""}\nInsurance offered: ${co.insurance_offered ?? ""}\nInsurance provider: ${co.insurance_provider ?? ""}\nCoverage summary: ${co.coverage_summary ?? ""}\nUSP notes: ${co.usp_notes ?? ""}\nAdditional notes: ${co.additional_notes ?? ""}\nEstimated revenue: ${co.estimated_revenue_gbp ?? ""}\nEmployees: ${co.employees ?? ""}\nMonthly visits: ${co.monthly_visits ?? ""}\n\n${notesBlock}\n\nPREVIOUS OUTREACH (background only - never mention it in the message)\n${threadText}\n\nTASK\nWrite the single ${mapped.channel} message ${sender} should send to this contact now, applying the loaded PIER_Rules, LinkedIn_Message_Architect, Lead_and_ICP_Brief, OUTREACH_QUICK_REFERENCE, and PIER_Response_Bank. This message is a "${mapped.touch_type}": ${mapped.intent} If prior outreach exists, write a natural forward message (re-engagement) - never a first-touch opener and never a comment on the history.\n\nSign off: ${sender}\n\nReturn ONLY the JSON object described in the drafting directive. The "message" value is what ${sender} sends: no preamble, no meta-commentary, no notes about prior messages, no subject line.`;
 
     let messageBody = "";
     let draftNarrative: string | null = null;
     let draftGuardrails: string[] = [];
+    let stateOfPlay: string[] = [];
     let generationFailed = false;
     let genError = "";
     // deno-lint-ignore no-explicit-any
@@ -424,12 +435,16 @@ Deno.serve(async (req) => {
         draftGuardrails = Array.isArray(parsed?.guardrails)
           ? parsed.guardrails.filter((g: unknown) => typeof g === "string" && g.trim()).slice(0, 4).map((g: string) => g.trim())
           : [];
+        stateOfPlay = Array.isArray(parsed?.state_of_play)
+          ? parsed.state_of_play.filter((g: unknown) => typeof g === "string" && g.trim()).slice(0, 4).map((g: string) => g.trim())
+          : [];
         if (!messageBody) throw new Error("json_missing_message");
       } catch {
         console.warn(JSON.stringify({ event: "envelope_parse_fallback", contact_id: contact.id }));
         messageBody = rawOut;
         draftNarrative = null;
         draftGuardrails = [];
+        stateOfPlay = [];
       }
       if (!messageBody) { genError = "empty_generation"; throw new Error("empty_generation"); }
     } catch (e) {
@@ -466,6 +481,19 @@ Deno.serve(async (req) => {
     };
     const { data: inserted, error: insErr } = await supabase.from("outreach_log").insert(insertRow).select("id").single();
     if (insErr) throw insErr;
+
+    // F6.7b: refresh the AI section of the conversation notes. User lines above the marker are
+    // never touched; only the block below it is replaced. Non-fatal: a notes failure must never
+    // cost a draft that has already been written.
+    if (!generationFailed && stateOfPlay.length) {
+      try {
+        const merged = mergeAiStateOfPlay(contact.conversation_summary, stateOfPlay, `${todayIso}, draft: ${mapped.touch_type} via ${mapped.channel}`);
+        const { error: nErr } = await supabase.from("contacts").update({ conversation_summary: merged }).eq("id", contact.id).eq("team_id", PIER_TEAM_ID);
+        if (nErr) throw nErr;
+      } catch (e) {
+        console.error(JSON.stringify({ event: "conversation_summary_update_failed", contact_id: contact.id, message: (e as Error).message ?? String(e) }));
+      }
+    }
 
     console.log(JSON.stringify({ event: "draft_created", touch_id: inserted.id, contact_id: contact.id, sender, lint_score: lint.score, pass: lint.pass, generation_failed: generationFailed }));
     return json(200, { status: generationFailed ? "generation_failed" : "created", touch_id: inserted.id, sender, message_preview: messageBody.slice(0, 200), narrative: draftNarrative, guardrails: draftGuardrails, usage, estimated_cost_gbp: costGbp, pre_lint_pass: lint.pass, lint_score: lint.score, path, frame, gen_error: genError || undefined });
