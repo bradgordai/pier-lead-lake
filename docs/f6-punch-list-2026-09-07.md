@@ -67,3 +67,11 @@ companies; backfilled: 142 live contacts sit under archived companies, 536 remai
 - Archived rows: bg-primary/10 tint, sticky Name cell opaque + pseudo-element tint, outline badge with the
   reason ("Moved to Monday", "Out of scope", else the raw reason), delete hidden. Contact detail header shows
   "Company archived: <reason>".
+
+## F6.3 Refused tab upgrades
+Lovable commit 1456ffa0. refusalsListFn now passes the latest row's gate `context` through (latest-per-contact
+collapse unchanged). Refused tab label carries a badge = distinct contacts refused in the default 7-day window.
+Cards are clickable (button semantics, Enter/Space) and expand to: full reason + code chip, requested/channel,
+first refused and last refused (d LLL yyyy HH:mm), days running, previous reason, gate context rendered as a
+humanised key/value grid (dates formatted, booleans yes/no, nested JSON in a small pre), and "Open contact" /
+"Open company" buttons. Name links stop propagation so they never toggle the card.
