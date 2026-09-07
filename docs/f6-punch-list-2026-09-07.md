@@ -84,3 +84,13 @@ companies.account_owner filter stays available under Add filter as "Company owne
 and toggle by owner id. Sticky Name + checkbox cells now follow the CompaniesTable pattern: opaque
 bg-background base, before: tint layer for active/selected/archived, group-hover after: overlay, content wrapped
 in a relative z-[1] span, no "relative" on the td (tailwind-merge drops "sticky"), header corners z-[5].
+
+## F6.7a conversation Notes in the UI
+Lovable commit 48976d6f. src/lib/conversationSummary.ts mirrors the EF helper (AI_MARKER, splitSummary,
+joinSummary). ConversationNotes component: editable operator bullets (Textarea, saves on blur via
+updateContactFn with the AI section preserved verbatim, toast "Notes saved"), and a read-only grey box with the
+AI state of play when present. Mounted at the bottom of the contact Conversation tab (also on the empty state)
+and under the Conversation section of the draft editor. updateContactFn EDITABLE gains conversation_summary;
+getDraftContextFn selects it.
+Full circle: operator writes above the marker; drafter v28 and classifier v15 refresh below it; all three model
+calls read both sections plus next_action and background_notes under the two stated rules.
