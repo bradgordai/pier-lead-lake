@@ -222,8 +222,20 @@ Deno.serve(async (req) => {
       .eq("id", rowId).eq("team_id", PIER_TEAM_ID);
     if (uErr) throw uErr;
 
+    // F1 (2026-09-07): an InMail costs a credit the moment it is dispatched. The ledger
+    // function is idempotent per row, so a retried launch cannot double-charge. The
+    // callback reverses the charge if the phantom reports the send did not complete.
+    // Today InMail is not wired (see the inmail_not_wired guard above), so this only runs
+    // once that guard is lifted; it is here so the credit is never forgotten when it is.
+    let inmailBalance: number | null = null;
+    if (channel === "LinkedIn inMail") {
+      const { data: bal, error: lErr } = await supabase.rpc("fn_ledger_inmail_send", { p_outreach_log_id: rowId, p_user_id: null });
+      if (lErr) console.error(JSON.stringify({ event: "inmail_ledger_failed", id: rowId, message: lErr.message }));
+      else inmailBalance = bal as number | null;
+    }
+
     console.log(JSON.stringify({ event: "sent", id: rowId, phantom_run_id: containerId, channel, test_mode: TEST_MODE }));
-    return json(200, { status: "sent", phantom_run_id: containerId, channel, test_mode: TEST_MODE, recipient_url: recipientUrl });
+    return json(200, { status: "sent", phantom_run_id: containerId, channel, test_mode: TEST_MODE, recipient_url: recipientUrl, inmail_balance: inmailBalance });
   } catch (e) {
     console.error(JSON.stringify({ event: "handler_error", message: (e as Error).message ?? String(e), test_mode: TEST_MODE }));
     return json(500, { error: "internal_error", detail: (e as Error).message ?? "unknown" });

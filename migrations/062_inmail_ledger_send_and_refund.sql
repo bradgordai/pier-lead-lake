@@ -1,0 +1,8 @@
+-- 062: InMail credit ledger wiring (F1, 2026-09-07). Applied via apply_migration; canonical
+-- text in the Supabase migration history. Adds a unique index (outreach_log_id, event_type)
+-- for send / accept_refund / send_reversal and three SECURITY INVOKER functions:
+--   fn_ledger_inmail_send(outreach_log_id, user_id)        delta -1 at InMail dispatch
+--   fn_ledger_inmail_reverse(outreach_log_id, reason)      delta +1 when the phantom did not send
+--   fn_ledger_inmail_accept_refund(contact_id, user_id)    delta +1 once per accepted InMail route
+-- EXECUTE revoked from anon/authenticated; called by Edge Functions with the service role.
+-- 063 (same session) widened inmail_credit_ledger_event_type_check to include 'send_reversal'.

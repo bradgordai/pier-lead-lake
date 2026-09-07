@@ -112,6 +112,18 @@ Deno.serve(async (req) => {
 
     console.log(JSON.stringify({ event: "connection_accepted", contact_id: contact.id, previous_status: previousStatus }));
 
+    // F1 (2026-09-07): LinkedIn refunds an InMail credit when the recipient accepts. The SQL
+    // function refunds once per contact and only if the CR route actually used InMail
+    // (a Sent LinkedIn inMail row exists); otherwise it is a no-op.
+    let inmailRefund: number | null = null;
+    try {
+      const { data: bal, error: lErr } = await supabase.rpc("fn_ledger_inmail_accept_refund", { p_contact_id: contact.id, p_user_id: null });
+      if (lErr) console.error(JSON.stringify({ event: "inmail_refund_failed", contact_id: contact.id, message: lErr.message }));
+      else inmailRefund = bal as number | null;
+    } catch (e) {
+      console.error(JSON.stringify({ event: "inmail_refund_failed", contact_id: contact.id, message: (e as Error).message }));
+    }
+
     // Chain into generate-draft-from-context. The connection flip is the primary success;
     // draft generation is best-effort and never fails the request.
     let draft: unknown = null;
@@ -133,6 +145,7 @@ Deno.serve(async (req) => {
       contact_id: contact.id,
       previous_status: previousStatus,
       action: "connection_accepted",
+      inmail_refund_balance: inmailRefund,
       draft,
     });
   } catch (e) {

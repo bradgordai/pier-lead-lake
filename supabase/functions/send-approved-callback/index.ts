@@ -100,6 +100,17 @@ function toArray(v: any): unknown[] {
   return [];
 }
 
+// F1 (2026-09-07): give the InMail credit back when the phantom did not actually send.
+// No-op for DM/CR rows and for rows with no 'send' ledger event (the SQL function checks).
+async function reverseInmailCharge(outreachLogId: string, reason: string): Promise<void> {
+  try {
+    const { error } = await supabase.rpc("fn_ledger_inmail_reverse", { p_outreach_log_id: outreachLogId, p_reason: reason.slice(0, 200) });
+    if (error) console.error(JSON.stringify({ event: "inmail_reverse_failed", id: outreachLogId, message: error.message }));
+  } catch (e) {
+    console.error(JSON.stringify({ event: "inmail_reverse_failed", id: outreachLogId, message: (e as Error).message }));
+  }
+}
+
 // deno-lint-ignore no-explicit-any
 async function logAudit(action: string, entityId: string, summary: string, after: any) {
   try {
@@ -154,6 +165,7 @@ Deno.serve(async (req) => {
         .update({ send_status: "Cancelled", send_error: err.slice(0, 500) })
         .eq("id", row.id).eq("team_id", PIER_TEAM_ID);
       if (uErr) throw uErr;
+      await reverseInmailCharge(row.id, err);
       await logAudit("send_failed", row.id, `Send failed: ${err}`.slice(0, 300), { phantom_run_id: runId, exit_code: exitCodeRaw, exit_message: exitMessage });
       console.error(JSON.stringify({ event: "send_failed", id: row.id, run_id: runId, exit_code: exitCodeRaw }));
       return json(200, { status: "send_failed", outreach_log_id: row.id, phantom_run_id: runId, error: err });
@@ -167,6 +179,7 @@ Deno.serve(async (req) => {
         // or send by hand. The message never went out; it is not 'sent'.
         .eq("id", row.id).eq("team_id", PIER_TEAM_ID);
       if (uErr) throw uErr;
+      await reverseInmailCharge(row.id, "phantom_skipped_duplicate_or_empty");
       await logAudit("send_skipped", row.id, "LinkedIn skipped this send (already messaged recently, or empty input). Draft left in Approved.", { phantom_run_id: runId, exit_code: 0, exit_message: exitMessage });
       console.warn(JSON.stringify({ event: "send_skipped", id: row.id, run_id: runId }));
       return json(200, { status: "send_skipped", outreach_log_id: row.id, phantom_run_id: runId, reason: "phantom_skipped_duplicate_or_empty" });
