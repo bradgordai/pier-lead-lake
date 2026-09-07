@@ -75,3 +75,12 @@ Cards are clickable (button semantics, Enter/Space) and expand to: full reason +
 first refused and last refused (d LLL yyyy HH:mm), days running, previous reason, gate context rendered as a
 humanised key/value grid (dates formatted, booleans yes/no, nested JSON in a small pre), and "Open contact" /
 "Open company" buttons. Name links stop propagation so they never toggle the card.
+
+## F6.5 Contacts Owner column, Owner filter, sticky Name fix
+Lovable commit 88b9a260. New src/lib/owners.ts (Oliver Müller, Jack Stevens, Brad by user id; "Unowned").
+Owner column (display name, from contacts.owner_user_id) sits after Company and sorts by owner id. The primary
+Owner filter now targets owner_user_id with all three owners plus Unowned (null); the old
+companies.account_owner filter stays available under Add filter as "Company owner". Pulse "Owners" chips count
+and toggle by owner id. Sticky Name + checkbox cells now follow the CompaniesTable pattern: opaque
+bg-background base, before: tint layer for active/selected/archived, group-hover after: overlay, content wrapped
+in a relative z-[1] span, no "relative" on the td (tailwind-merge drops "sticky"), header corners z-[5].
