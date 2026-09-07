@@ -150,7 +150,8 @@ Deno.serve(async (req) => {
           // contacts would otherwise add a row on every daily run and drown the queue view.
           const since = new Date(today.getTime() - 24 * 3600 * 1000).toISOString();
           const { data: dup } = await supabase.from("refusals").select("id")
-            .eq("contact_id", c.contact_id).eq("reason_code", gate.reason_code).gte("created_at", since).limit(1).maybeSingle();
+            .eq("team_id", PIER_TEAM_ID).eq("contact_id", c.contact_id)
+            .eq("reason_code", gate.reason_code).gte("created_at", since).limit(1).maybeSingle();
           if (!dup) {
             await supabase.from("refusals").insert({
               team_id: PIER_TEAM_ID, contact_id: c.contact_id, company_id: c.company_id,

@@ -38,7 +38,7 @@ Deno.serve(async (req) => {
 
   const payload = rows.map((r: Record<string, unknown>, i: number) => ({
     run_id: runId,
-    row_num: Number(r.__row ?? i),
+    row_num: Number.isFinite(Number(r.__row)) ? Number(r.__row) : i,
     raw: r,
   }));
   const { error } = await supabase.from(table).insert(payload);
