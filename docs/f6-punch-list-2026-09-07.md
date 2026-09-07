@@ -102,3 +102,27 @@ migrated_legacy added to the thread, contact-conversation, company-outreach and 
 Rendered in: Outreach thread list + conversation cards, draft editor header + its conversation, both kanbans,
 OutreachTable, contact Conversation bubbles (light variant on the outbound bubble), company outreach list,
 Today pending-drafts samples.
+
+## F6.9 advisor re-check
+Security advisor after everything: the only new items were mine (f6_sweep_work without RLS; the two 065
+trigger functions executable over RPC as SECURITY DEFINER). Migration 066 revokes EXECUTE on both from
+public/anon/authenticated and drops the work table. Re-run: nothing new. Remaining items are all pre-existing:
+INFO RLS-enabled-no-policy on migration_audit and the staging_wb_* tables, WARN extensions in public
+(pg_trgm, vector, pg_net), WARN fn_user_teams executable by authenticated (intentional, visibility model).
+Performance advisor: unchanged set of unindexed FKs / unused indexes, no new entries after 064-066.
+
+## State snapshot for the 2026-09-08 smoke test
+Repo HEAD carries migrations 064-066 (all applied), EF sources for drafter v28 / ai-edit-draft v3 /
+classifier v15 (all deployed), and this doc. Lovable commits in order: bb5f7048 (F6.1), 8056c204 (F6.2),
+1456ffa0 (F6.3), 88b9a260 (F6.5), 48976d6f (F6.7a), 6be8d5b4 (F6.8); published to pier-lead-lake.lovable.app.
+Data: 177 touches de-annotated (18 inbound, 149 outbound + 5 AI-edit tags + 3 nulled), 24 InMail subjects
+recovered, 112 contacts got stamped notes, all logged under run pre-handover-2026-09-07 /
+f6_4_contamination_sweep. Pending canon 67 (raw 71) is now the only number any surface shows. 142 contacts
+sit under archived companies and are hidden by default. Marco Stiemert has one operator conversation note
+(test seed, harmless). Drafter dry run on Markus Haas (Telefónica) returned a 4-bullet state of play;
+Marco's dry run refused on company_not_deep_researched (Coolblue at Untouched), i.e. gates still run first.
+Nothing was sent, no phantom launched, no EF deployed inside a watcher window.
+Smoke test tomorrow: Today 67 = Outreach Pending tab 67 = Pulse tile 67; Contacts default 536 rows, toggle
+shows 142 with reason badges; Owner column + filter incl. Jack; Refused tab badge + expanding cards; open
+Marco Stiemert > Conversation: T944 ends at "Beste Grüße, Marco", Notes box at the bottom, "L" badges on
+workbook rows; open any legacy draft in the editor: "L" next to the status pill, Notes under the conversation.
