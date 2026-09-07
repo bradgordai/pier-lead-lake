@@ -55,3 +55,15 @@ Lovable commit bb5f7048. Root cause: the Outreach Pulse "Pending review" tile co
 - capture-and-classify-reply v15: CONTACT NOTES block in the classification prompt, state_of_play[] in the
   JSON, AI section refreshed after classification (stamp "date, reply classified: <class>").
 - Neither drafter previously included next_action or background_notes at all, so F6.6 was an add, not a verify.
+
+## F6.2 Contacts archived toggle
+Lovable commit 8056c204. Migration 065 adds contacts.company_archived_at, a trigger-maintained mirror of
+companies.archived_at (before insert/update of company_id on contacts; after update of archived_at on
+companies; backfilled: 142 live contacts sit under archived companies, 536 remain in the default view).
+- Default Contacts list, pulse, total count, country / company-name / SN-list option lists all add
+  `company_archived_at is null`; the "Archived only" switch (toolbar, after saved views, same as Companies)
+  flips it to `is not null`. Coverage tile reads "N of M archived" when on.
+- Deep link from a company page (?company=) skips the exclusion so an archived company's contacts still list.
+- Archived rows: bg-primary/10 tint, sticky Name cell opaque + pseudo-element tint, outline badge with the
+  reason ("Moved to Monday", "Out of scope", else the raw reason), delete hidden. Contact detail header shows
+  "Company archived: <reason>".
