@@ -589,7 +589,7 @@ Deno.serve(async (req) => {
     // test drafts in Pending Review for Oli to clean up.
     if (dryRun) {
       console.log(JSON.stringify({ event: "draft_dry_run", contact_id: contact.id, usage, estimated_cost_gbp: costGbp }));
-      return json(200, { status: "dry_run", contact_id: contact.id, sender, usage, estimated_cost_gbp: costGbp, narrative: draftNarrative, guardrails: draftGuardrails, message_preview: messageBody.slice(0, 300), message: messageBody, lint_score: lint.score, draft_language: draftLanguage, draft_language_reason: draftLanguageReason, sign_off_appended: signOffAppended, touch_type: mapped.touch_type, effective_trigger: effectiveTrigger });
+      return json(200, { status: "dry_run", contact_id: contact.id, sender, usage, estimated_cost_gbp: costGbp, narrative: draftNarrative, guardrails: draftGuardrails, message_preview: messageBody.slice(0, 300), message: messageBody, lint_score: lint.score, draft_language: draftLanguage, draft_language_reason: draftLanguageReason, sign_off_appended: signOffAppended, touch_type: mapped.touch_type, effective_trigger: effectiveTrigger, thread_context: threadText.slice(0, 600) });
     }
 
     const today = new Date().toISOString().slice(0, 10);
