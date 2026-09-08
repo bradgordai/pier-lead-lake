@@ -1,4 +1,4 @@
-// Edge Function: capture-and-classify-reply  (v16, F8 2026-09-08)
+// Edge Function: capture-and-classify-reply  (v17, F8 2026-09-08)
 //
 // Every LinkedIn inbox message reaches this function: from Make "Pier Inbox Watcher"
 // (scenario 9704543, fed by the Inbox Scraper phantom's webhook every 4 hours), from the
@@ -22,8 +22,14 @@
 //   identifiers onto the contact, so that sender exact-matches forever after.
 //
 //   OWN MESSAGES (isLastMessageFromMe=true) are Oliver's. No classify, no draft, no alert.
-//   Matched by alias only (the name fields are Oliver's) and recorded as an outbound touch
-//   if absent, which keeps threads current with what Oli sends by hand and feeds sent_body.
+//   The phantom names Oliver as the sender, so the name rung reads the greeting in the body
+//   ("Hi Joan", "Hallo Herr Siebel") and files only when exactly one live contact carries
+//   that name AND we sent them something within 60 days of the message. Otherwise queued
+//   with the candidates. Filed messages become outbound touches, which keeps threads
+//   current with what Oli sends by hand and feeds sent_body.
+//
+//   Messages with no text (an image, a document, a reaction) are queued with a placeholder,
+//   never dropped.
 //
 //   IDEMPOTENCY: outreach_log.external_key = sha256(threadUrl|lastMessageDate|body), unique
 //   per team. Replays and the watcher re-sending the same inbox snapshot are no-ops.
@@ -96,6 +102,15 @@ function pick(obj: any, keys: string[]): string {
 const norm = (s: string) => String(s ?? "").trim().toLowerCase().replace(/\/+$/, "");
 const foldAscii = (s: string) => String(s ?? "").normalize("NFD").replace(/[\u0300-\u036f]/g, "").replace(/ß/g, "ss");
 const normName = (s: string) => foldAscii(s).toLowerCase().replace(/[^a-z0-9 ]+/g, " ").replace(/\s+/g, " ").trim();
+/** The counterparty's name as addressed in the opening line of Oliver's own message. */
+function greetingName(body: string): { kind: "first" | "last"; name: string } | null {
+  const first = String(body ?? "").trim().split(/\r?\n/)[0] ?? "";
+  const m = /^(?:hi|hey|hello|hallo|hoi|moin|servus|dear|guten\s+tag|guten\s+morgen|liebe[rs]?|sehr\s+geehrte[rs]?)\s+(?:(herr|frau|mr|mrs|ms|dr)\.?\s+)?([^\s,!.:;]+)/i.exec(first);
+  if (!m) return null;
+  const name = m[2].replace(/[^\p{L}\p{M}'-]/gu, "");
+  if (name.length < 2) return null;
+  return { kind: m[1] ? "last" : "first", name };
+}
 async function sha256Hex(s: string): Promise<string> {
   const buf = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(s));
   return Array.from(new Uint8Array(buf)).map((b) => b.toString(16).padStart(2, "0")).join("");
@@ -211,23 +226,43 @@ async function matchContact(p: Payload): Promise<Match> {
       .limit(1).maybeSingle();
     if (data?.id) return { contactId: data.id, rung: "slug", candidates: [] };
   }
-  // (c) name, never for Oliver's own messages
-  if (p.isLastMessageFromMe || !p.lastnameFrom) return { contactId: null, rung: "none", candidates: [] };
+  // (c) name. For a prospect's message the phantom gives us their name; for Oliver's own
+  //     message the only name is the greeting in the body.
+  const msgAt = Date.parse(messageDateIso(p));
+  const isRecent = (lastOutbound: string | null) =>
+    !!lastOutbound && Math.abs(msgAt - Date.parse(lastOutbound)) <= 60 * 86400000;
+  // deno-lint-ignore no-explicit-any
+  const toCands = (rows: any[], useOcc: boolean): Candidate[] => rows.map((r) => {
+    const recent = isRecent(r.last_outbound ?? null);
+    const occ = useOcc && occupationOverlap(p.occupationFrom, r.job_title, r.company_name);
+    return {
+      contact_id: r.id, full_name: `${r.first_name ?? ""} ${r.last_name ?? ""}`.trim(), job_title: r.job_title ?? null,
+      company_name: r.company_name ?? null, last_outbound: r.last_outbound ?? null,
+      score: 50 + (recent ? 30 : 0) + (occ ? 20 : 0),
+    };
+  }).sort((a, b) => b.score - a.score);
+
+  if (p.isLastMessageFromMe) {
+    const g = greetingName(p.message);
+    if (!g) return { contactId: null, rung: "none", candidates: [] };
+    const fn = g.kind === "last" ? "fn_match_contacts_by_name" : "fn_match_contacts_by_first_name";
+    const args = g.kind === "last"
+      ? { p_team_id: PIER_TEAM_ID, p_last: g.name, p_last_ascii: foldAscii(g.name) }
+      : { p_team_id: PIER_TEAM_ID, p_first: g.name, p_first_ascii: foldAscii(g.name) };
+    const { data: rows } = await supabase.rpc(fn, args);
+    // deno-lint-ignore no-explicit-any
+    const cands = toCands((rows ?? []) as any[], false);
+    // A greeting is weaker evidence than a full name: file only with a recent outbound.
+    if (cands.length === 1 && cands[0].score >= 80) return { contactId: cands[0].contact_id, rung: "name", candidates: cands };
+    return { contactId: null, rung: "none", candidates: cands.slice(0, 5) };
+  }
+
+  if (!p.lastnameFrom) return { contactId: null, rung: "none", candidates: [] };
   const { data: rows } = await supabase.rpc("fn_match_contacts_by_name", { p_team_id: PIER_TEAM_ID, p_last: p.lastnameFrom, p_last_ascii: foldAscii(p.lastnameFrom) });
   const wantFirst = normName(p.firstnameFrom);
   // deno-lint-ignore no-explicit-any
-  const cands: Candidate[] = ((rows ?? []) as any[])
-    .filter((r) => !wantFirst || normName(r.first_name ?? "") === wantFirst || normName(r.first_name ?? "").startsWith(wantFirst.split(" ")[0]))
-    .map((r) => {
-      const recent = r.last_outbound && (Date.now() - Date.parse(r.last_outbound)) <= 60 * 86400000;
-      const occ = occupationOverlap(p.occupationFrom, r.job_title, r.company_name);
-      return {
-        contact_id: r.id, full_name: `${r.first_name ?? ""} ${r.last_name ?? ""}`.trim(), job_title: r.job_title ?? null,
-        company_name: r.company_name ?? null, last_outbound: r.last_outbound ?? null,
-        score: 50 + (recent ? 30 : 0) + (occ ? 20 : 0),
-      };
-    })
-    .sort((a, b) => b.score - a.score);
+  const cands = toCands(((rows ?? []) as any[])
+    .filter((r) => !wantFirst || normName(r.first_name ?? "") === wantFirst || normName(r.first_name ?? "").startsWith(wantFirst.split(" ")[0])), true);
   if (cands.length === 1 && cands[0].score >= 70) return { contactId: cands[0].contact_id, rung: "name", candidates: cands };
   return { contactId: null, rung: "none", candidates: cands.slice(0, 5) };
 }
@@ -447,7 +482,8 @@ const zero = (): Counts => ({ processed: 0, matched: 0, own_threaded: 0, queued:
 async function processPayload(body: any, counts: Counts): Promise<Record<string, unknown>> {
   const p = parsePayload(body);
   counts.processed++;
-  if (!p.message) { counts.skipped++; return { status: "skipped", reason: "empty_message" }; }
+  if (!p.message && !p.threadUrl) { counts.skipped++; return { status: "skipped", reason: "empty_payload" }; }
+  if (!p.message) p.message = "(no text: an image, a document or a reaction)";
   const key = await externalKey(p);
   const dup = await existingByKey(key);
   if (dup) { counts.duplicates++; return { status: "duplicate", touch_id: dup }; }
@@ -458,6 +494,9 @@ async function processPayload(body: any, counts: Counts): Promise<Record<string,
     if (r.outcome === "duplicate") counts.duplicates++;
     else if (r.outcome === "filed_own_message") counts.own_threaded++;
     else counts.matched++;
+    // If an earlier pass queued this message, the queue entry is now resolved.
+    await supabase.from("unmatched_replies").update({ status: "assigned", assigned_contact_id: m.contactId, assigned_at: new Date().toISOString(), created_touch_id: r.touch_id })
+      .eq("team_id", PIER_TEAM_ID).eq("external_key", key).eq("status", "open");
     return { status: r.outcome, contact_id: m.contactId, touch_id: r.touch_id, rung: m.rung, reply_classification: r.classification };
   }
   const q = await queueOrphan(p, key, m.candidates);
@@ -578,7 +617,7 @@ Deno.serve(async (req) => {
     // Default: one message from Make. Same field tolerance as v15, plus the new identifiers.
     try { console.log(JSON.stringify({ event: "inbox_message_shape", keys: Object.keys(body ?? {}) })); } catch { /* noop */ }
     const p = parsePayload(body);
-    if (!p.message) return json(400, { error: "missing_required_fields", detail: "message is required" });
+    if (!p.message && !p.threadUrl) return json(400, { error: "missing_required_fields", detail: "message or threadUrl is required" });
     const counts = zero();
     const out = await processPayload(body, counts);
     return json(200, { ...out, counts });
