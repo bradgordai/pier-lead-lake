@@ -27,6 +27,8 @@ import { authorize } from "./_shared/authorize.ts";
 import { callAnthropicWithSentinel, BudgetExceededError } from "./_shared/anthropic-sentinel.ts";
 // F6.6: the contact notes block (next_action, background_notes, conversation_summary) is part of
 // the edit context, with the two rules stated (gates override notes; note dates matter). v3.
+// F11.2 (v5): revisions carry source ('original' / 'ai_edit'); manual saves and restores are
+// written by the app with 'manual_save' / 'restore'.
 import { contactNotesBlock } from "./_shared/conversation-summary.ts";
 
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL") ?? "";
@@ -261,10 +263,10 @@ Deno.serve(async (req) => {
     const rows: Array<Record<string, unknown>> = [];
     let next = ((existing?.[0]?.revision_number as number | undefined) ?? -1) + 1;
     if (!existing || existing.length === 0) {
-      rows.push({ team_id: PIER_TEAM_ID, outreach_log_id: row.id, revision_number: 0, message_body: original, edit_instruction: null, created_by: createdBy });
+      rows.push({ team_id: PIER_TEAM_ID, outreach_log_id: row.id, revision_number: 0, message_body: original, edit_instruction: null, created_by: createdBy, source: "original" });
       next = 1;
     }
-    rows.push({ team_id: PIER_TEAM_ID, outreach_log_id: row.id, revision_number: next, message_body: rewritten, edit_instruction: instruction, created_by: createdBy });
+    rows.push({ team_id: PIER_TEAM_ID, outreach_log_id: row.id, revision_number: next, message_body: rewritten, edit_instruction: instruction, created_by: createdBy, source: "ai_edit" });
     const { error: iErr } = await supabase.from("draft_revisions").insert(rows);
     if (iErr) throw iErr;
 
