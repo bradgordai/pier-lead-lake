@@ -4,7 +4,7 @@ import { callAnthropicWithSentinel, BudgetExceededError } from "./_shared/anthro
 // F6.6/F6.7: contact notes go into the prompt as a labelled block with two rules (gates override
 // notes; note dates matter), and the AI section of contacts.conversation_summary is refreshed
 // with a short state-of-play after every draft. v28.
-// F9.5/F9.6 (v29): explicit target-language resolution (prior thread > contact Language > market
+// F9.5/F9.6 (v29, v30): explicit target-language resolution (prior thread > contact Language > market
 // default), draft_language recorded from the generated body, sign-off enforced.
 import { contactNotesBlock, mergeAiStateOfPlay } from "./_shared/conversation-summary.ts";
 
@@ -143,7 +143,8 @@ function resolveTargetLanguage(prev: any[], contactLang: string | null | undefin
     const l = detectLanguage(String(r.reply_content ?? r.message_body ?? ""));
     if (l) return { language: l, reason: `prior_thread: their reply of ${r.touch_date ?? "?"} is ${l}` };
   }
-  const sent = prev.filter((r) => r.touch_type !== "Reply").reverse();
+  // Only messages that actually went out count as the thread; an unsent draft is not evidence.
+  const sent = prev.filter((r) => r.touch_type !== "Reply" && String(r.send_status ?? "") === "Sent").reverse();
   for (const r of sent) {
     const l = detectLanguage(String(r.sent_body ?? r.message_body ?? ""));
     if (l) return { language: l, reason: `prior_thread: our message of ${r.touch_date ?? "?"} is ${l}` };
@@ -388,7 +389,7 @@ Deno.serve(async (req) => {
     }
 
     const { data: prevRows } = await supabase.from("outreach_log")
-      .select("touch_date, channel, touch_type, message_body, sent_body, subject_line, reply_content, sent_by")
+      .select("touch_date, channel, touch_type, message_body, sent_body, subject_line, reply_content, sent_by, send_status")
       .eq("team_id", PIER_TEAM_ID).eq("contact_id", contactId).order("touch_date", { ascending: true }).limit(50);
     // Only the last 30 days count as "live" thread context; older messages are summarised as a
     // re-engagement note so stale threads never derail the draft (older = stale, ignore the detail).
