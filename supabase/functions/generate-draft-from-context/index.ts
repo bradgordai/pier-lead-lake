@@ -4,6 +4,7 @@ import { callAnthropicWithSentinel, BudgetExceededError } from "./_shared/anthro
 // F6.6/F6.7: contact notes go into the prompt as a labelled block with two rules (gates override
 // notes; note dates matter), and the AI section of contacts.conversation_summary is refreshed
 // with a short state-of-play after every draft. v28.
+// F10 (v32): owner signs, SENT-only thread context, created_by.
 // F9.5/F9.6 (v29-v31): explicit target-language resolution (prior thread > contact Language > market
 // default), draft_language recorded from the generated body, sign-off enforced.
 import { contactNotesBlock, mergeAiStateOfPlay } from "./_shared/conversation-summary.ts";
@@ -25,12 +26,10 @@ const EA_ORDER = ["PIER_Rules", "LinkedIn_Message_Architect", "Lead_and_ICP_Brie
 // had one user; there are now two (Oliver Müller, Jack Stevens) and a draft Jack generates
 // must not go out signed as Oli.
 //
-// Resolution order:
-//   1. body.requesting_user  - the logged-in user, passed by the Lovable UI
-//   2. the contact's owner_user_id -> that user's display name. owner_user_id is CANON for
-//      ownership (the older account_owner column is migration reference data only). This is
-//      what makes the chained CR-accepted path correct: nobody is "requesting" it, so the
-//      draft is signed by whoever owns the contact.
+// Resolution order (F10.1, 2026-09-08):
+//   1. the contact's owner_user_id -> that user's first name. owner_user_id is CANON for
+//      ownership; messages go out from the owner's LinkedIn whoever pressed the button.
+//   2. body.requesting_user - only when the contact has no resolvable owner.
 //   3. "Oli" - last-resort legacy default, logged as a warning so it is visible.
 const NICKNAMES: Record<string, string> = { oliver: "Oli" };
 // Split on whitespace AND . _ - so an email local-part degrades sensibly:
@@ -46,14 +45,13 @@ function firstNameOf(display: string): string {
 }
 // deno-lint-ignore no-explicit-any
 async function resolveSender(supa: any, requesting: string, ownerUserId: string | null): Promise<string> {
-  const fromBody = firstNameOf(requesting);
-  if (fromBody) return fromBody;
+  // F10.1: messages dispatch from the contact OWNER's LinkedIn whoever is operating the app,
+  // so the sign-off is the owner's first name. The requesting user is only a fallback for a
+  // contact with no resolvable owner.
   if (ownerUserId) {
     try {
       const { data } = await supa.auth.admin.getUserById(ownerUserId);
       const meta = data?.user?.user_metadata ?? {};
-      // first_name is the convention already used on some accounts, so prefer it
-      // over the full-name fields; fall back to the email local-part last.
       const display = meta.first_name ?? meta.name ?? meta.full_name ?? meta.display_name
         ?? (data?.user?.email ?? "").split("@")[0];
       const fromOwner = firstNameOf(String(display ?? ""));
@@ -62,7 +60,12 @@ async function resolveSender(supa: any, requesting: string, ownerUserId: string 
       console.warn(JSON.stringify({ event: "sender_lookup_failed", message: (e as Error).message }));
     }
   }
-  console.warn(JSON.stringify({ event: "sender_defaulted", detail: "No requesting_user and no resolvable owner; defaulting to Oli." }));
+  const fromBody = firstNameOf(requesting);
+  if (fromBody) {
+    console.warn(JSON.stringify({ event: "sender_from_requester", detail: "No resolvable owner; signing as the requesting user." }));
+    return fromBody;
+  }
+  console.warn(JSON.stringify({ event: "sender_defaulted", detail: "No owner and no requesting_user; defaulting to Oli." }));
   return "Oli";
 }
 const basicVoiceFallback = (sender: string) => `You are ${sender} at Pier Insurance, writing a first LinkedIn DM to a contact who just accepted your connection request. Voice: direct, warm, specific, peer-to-peer. No corporate jargon, no em-dashes/en-dashes. Keep it short (ideally under 600 characters). Reference something concrete about their company. End with a light, low-friction question. Sign off '${sender}'.`;
@@ -405,7 +408,9 @@ Deno.serve(async (req) => {
       .eq("team_id", PIER_TEAM_ID).eq("contact_id", contactId).order("touch_date", { ascending: true }).limit(50);
     // Only the last 30 days count as "live" thread context; older messages are summarised as a
     // re-engagement note so stale threads never derail the draft (older = stale, ignore the detail).
-    const allPrev = prevRows ?? [];
+    // F10.2: only what actually went out (or came in) is history. Drafts, superseded drafts and
+    // rejected drafts never feed the narrative, the no-repetition context or the counters.
+    const allPrev = (prevRows ?? []).filter((r) => r.touch_type === "Reply" || String(r.send_status ?? "") === "Sent");
     // F9.5b: the target language is decided here, explicitly, and told to the model.
     const target = resolveTargetLanguage(allPrev, contact.language_code, company?.country ?? null);
     console.log(JSON.stringify({ event: "language_resolved", contact_id: contact.id, language: target.language, reason: target.reason }));
@@ -593,7 +598,9 @@ Deno.serve(async (req) => {
       channel: mapped.channel, touch_type: mapped.touch_type, message_body: messageBody, subject_line: null,
       draft_status: "pending_review", send_status: "Draft", agent_produced: true,
       pre_lint_pass: lint.pass, voice_contract_violations: lint.violations, lint_score: lint.score,
-      path, recommended_frame: frame, recommended_arc: arc, touch_date: today, sent_by: sender,
+      path, recommended_frame: frame, recommended_arc: arc, touch_date: today,
+      // F10.1: sent_by belongs to dispatch. created_by records who asked for the draft.
+      sent_by: null, created_by: requestingUser || "agent",
       draft_narrative: draftNarrative, draft_guardrails: draftGuardrails,
       draft_language: draftLanguage, draft_language_reason: draftLanguageReason,
     };

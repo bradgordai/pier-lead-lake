@@ -144,16 +144,18 @@ Deno.serve(async (req) => {
       company = data ?? null;
     }
 
-    // Sender: the draft's own sign-off wins (it is what the body already says), then the
-    // requesting user, then the owner's name. Never a hardcoded default.
-    let sender = String(row.sent_by ?? "").trim() || firstNameOf(requestingUser);
-    if (!sender && contact?.owner_user_id) {
+    // F10.1: the CONTACT OWNER signs (messages go out from the owner's LinkedIn whoever is
+    // operating), then the row's dispatch identity if it was already sent, then the requesting
+    // user. Never a hardcoded default.
+    let sender = "";
+    if (contact?.owner_user_id) {
       try {
         const { data } = await supabase.auth.admin.getUserById(contact.owner_user_id);
         const meta = data?.user?.user_metadata ?? {};
         sender = firstNameOf(String(meta.first_name ?? meta.name ?? meta.full_name ?? (data?.user?.email ?? "").split("@")[0] ?? ""));
       } catch { /* fall through */ }
     }
+    if (!sender) sender = String(row.sent_by ?? "").trim() || firstNameOf(requestingUser);
     if (!sender) sender = "the sender";
 
     // ALREADY SENT: what actually went out to this contact (sent_body first, C6), so the
