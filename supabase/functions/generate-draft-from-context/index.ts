@@ -4,6 +4,8 @@ import { callAnthropicWithSentinel, BudgetExceededError } from "./_shared/anthro
 // F6.6/F6.7: contact notes go into the prompt as a labelled block with two rules (gates override
 // notes; note dates matter), and the AI section of contacts.conversation_summary is refreshed
 // with a short state-of-play after every draft. v28.
+// F9.5/F9.6 (v29): explicit target-language resolution (prior thread > contact Language > market
+// default), draft_language recorded from the generated body, sign-off enforced.
 import { contactNotesBlock, mergeAiStateOfPlay } from "./_shared/conversation-summary.ts";
 
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL") ?? "";
@@ -98,6 +100,71 @@ function registerLine(formality: string | null | undefined, language: string | n
   if (formality === "Formal") return lang === "DE" ? "Sie (formal). Use Sie throughout, never du." : "formal and courteous.";
   return lang === "DE" ? "not recorded: default to Sie unless the prior thread already uses du." : "not recorded: match the prior thread.";
 }
+// ---------------------------------------------------------------- F9.5 / F9.6 language + sign-off
+// Small stop-word detector: enough to tell EN / DE / FR / NL / ES / IT / FI apart in a LinkedIn
+// message. Returns null when nothing scores, so callers can fall back.
+const LANG_MARKERS: Record<string, string[]> = {
+  EN: ["the", "and", "you", "your", "with", "for", "that", "this", "are", "would", "have", "thanks", "hi", "hello", "we", "our", "just", "if", "about"],
+  DE: ["und", "ich", "sie", "die", "der", "das", "nicht", "mit", "für", "wir", "ist", "auf", "eine", "einen", "hallo", "danke", "gerne", "bei", "zu", "wie", "ihnen", "ihr", "dir", "du"],
+  FR: ["le", "la", "les", "et", "vous", "nous", "pour", "avec", "une", "des", "est", "bonjour", "merci", "votre", "je", "pas", "sur"],
+  NL: ["de", "het", "een", "en", "je", "ik", "wij", "voor", "met", "niet", "dat", "hoi", "bedankt", "graag", "jullie", "uw", "ook"],
+  ES: ["el", "los", "las", "y", "para", "con", "una", "hola", "gracias", "que", "usted", "nosotros", "por"],
+  IT: ["il", "di", "che", "per", "con", "una", "ciao", "grazie", "sono", "noi", "voi", "anche"],
+  FI: ["ja", "että", "on", "hei", "kiitos", "meidän", "teidän", "olen", "voisi", "kanssa", "myös"],
+};
+function detectLanguage(text: string): string | null {
+  const words = String(text ?? "").toLowerCase().replace(/[^\p{L}\s']/gu, " ").split(/\s+/).filter(Boolean);
+  if (words.length < 3) return null;
+  const scores: Record<string, number> = {};
+  for (const [lang, markers] of Object.entries(LANG_MARKERS)) {
+    const set = new Set(markers);
+    scores[lang] = words.filter((w) => set.has(w)).length;
+  }
+  const ranked = Object.entries(scores).sort((a, b) => b[1] - a[1]);
+  const [best, bestScore] = ranked[0];
+  const second = ranked[1]?.[1] ?? 0;
+  if (bestScore === 0 || bestScore < Math.max(2, words.length * 0.04) || bestScore === second) return null;
+  return best;
+}
+const MARKET_LANGUAGE: Record<string, string> = {
+  germany: "DE", austria: "DE", switzerland: "DE", france: "FR", belgium: "FR", netherlands: "NL",
+  spain: "ES", italy: "IT", finland: "EN", sweden: "EN", denmark: "EN", norway: "EN", poland: "EN",
+  "united kingdom": "EN", uk: "EN", ireland: "EN", "united states": "EN", usa: "EN",
+};
+/**
+ * F9.5b. Explicit order: (1) the language of the prior thread, the contact's own replies first,
+ * then our sent messages, most recent first; (2) the contact's Language field; (3) the market
+ * default for the company's country (EA rule), else EN.
+ */
+// deno-lint-ignore no-explicit-any
+function resolveTargetLanguage(prev: any[], contactLang: string | null | undefined, country: string | null | undefined): { language: string; reason: string } {
+  const replies = prev.filter((r) => r.touch_type === "Reply").reverse();
+  for (const r of replies) {
+    const l = detectLanguage(String(r.reply_content ?? r.message_body ?? ""));
+    if (l) return { language: l, reason: `prior_thread: their reply of ${r.touch_date ?? "?"} is ${l}` };
+  }
+  const sent = prev.filter((r) => r.touch_type !== "Reply").reverse();
+  for (const r of sent) {
+    const l = detectLanguage(String(r.sent_body ?? r.message_body ?? ""));
+    if (l) return { language: l, reason: `prior_thread: our message of ${r.touch_date ?? "?"} is ${l}` };
+  }
+  const cl = String(contactLang ?? "").trim().toUpperCase();
+  if (cl) return { language: cl, reason: "contact_language: contact Language field" };
+  const mk = MARKET_LANGUAGE[String(country ?? "").trim().toLowerCase()];
+  if (mk) return { language: mk, reason: `market_default: ${country}` };
+  return { language: "EN", reason: "market_default: no country, EN" };
+}
+const LANG_NAMES: Record<string, string> = { EN: "English", DE: "German", FR: "French", NL: "Dutch", ES: "Spanish", IT: "Italian", FI: "Finnish" };
+/** F9.6. The message contract says every message ends with the sender's first name. */
+function ensureSignOff(message: string, sender: string): { message: string; appended: boolean } {
+  const body = String(message ?? "").trimEnd();
+  if (!body || !sender) return { message: body, appended: false };
+  const tail = body.split(/\r?\n/).filter((l) => l.trim()).slice(-2).join(" ").toLowerCase();
+  const re = new RegExp(`(^|[^\\p{L}])${sender.toLowerCase().replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}([^\\p{L}]|$)`, "u");
+  if (re.test(tail)) return { message: body, appended: false };
+  return { message: `${body}\n\n${sender}`, appended: true };
+}
+
 const BANNED = ["—", "–", "circle back", "touch base", "synergise", "synergize", "unlock", "hope this finds", "just following up", "reach out to explore", "quick one", "leveraging", "excited to connect", "we're uniquely positioned", "best-in-class"];
 
 function countOccurrences(h: string, n: string): number { if (!n) return 0; let c = 0, i = 0; while ((i = h.indexOf(n, i)) !== -1) { c++; i += n.length; } return c; }
@@ -191,7 +258,15 @@ Deno.serve(async (req) => {
       intent: "They have replied and the conversation is live. Continue it naturally - this is not an opener." },
   };
   // Copied so the C1 channel/intent overrides below cannot mutate the shared map.
-  const mapped = { ...(TRIGGER_MAP[triggerReason] ?? TRIGGER_MAP["cr_accepted"]) };
+  // F9.4: "manual_regenerate" is what the Regenerate button sends. It used to fall through
+  // to the CR-accepted opener, so regenerating a follow-up produced an opener and then hit
+  // the dedup guard. The button may name the touch type; otherwise it is resolved from the
+  // contact's state below.
+  const requestedTouchType = String(body?.touch_type ?? "").trim();
+  const byTouchType = Object.entries(TRIGGER_MAP).find(([, v]) => v.touch_type === requestedTouchType)?.[0];
+  const isManual = triggerReason === "manual_regenerate";
+  let effectiveTrigger = isManual ? (byTouchType ?? "") : triggerReason;
+  const mapped = { ...(TRIGGER_MAP[effectiveTrigger] ?? TRIGGER_MAP["cr_accepted"]) };
   if (exitShape) {
     mapped.intent = "FINAL touch on this route. This is the last message that will be sent, "
       + "so it must leave the door open and make no ask: no question, no meeting request, no "
@@ -201,10 +276,15 @@ Deno.serve(async (req) => {
 
   try {
     const { data: contact, error: cErr } = await supabase.from("contacts")
-      .select("id, contact_id, first_name, last_name, job_title, seniority, function, location, linkedin_url, company_id, connection_status, owner_user_id, outreach_status, archived_at, do_not_contact, formality, language_code, next_action, next_action_date, background_notes, conversation_summary")
+      .select("id, contact_id, first_name, last_name, job_title, seniority, function, location, linkedin_url, company_id, connection_status, owner_user_id, outreach_status, chase_state, archived_at, do_not_contact, formality, language_code, next_action, next_action_date, background_notes, conversation_summary")
       .eq("team_id", PIER_TEAM_ID).eq("id", contactId).maybeSingle();
     if (cErr) throw cErr;
     if (!contact) return json(404, { error: "contact_not_found" });
+    if (isManual && !effectiveTrigger) {
+      // A contact who replied gets a follow-up; anyone else gets the opener.
+      effectiveTrigger = (String(contact.chase_state ?? "") === "replied" || String(contact.outreach_status ?? "") === "In conversation") ? "follow_up" : "cr_accepted";
+      Object.assign(mapped, TRIGGER_MAP[effectiveTrigger]);
+    }
 
     // C5 REFUSAL GATES. Oli requirement 5a: the draft call must be able to return a
     // REFUSAL, not just a draft. All eight gates live in fn_evaluate_gates (migration 055)
@@ -213,12 +293,12 @@ Deno.serve(async (req) => {
     //
     // C1: an accepted contact is chased over FREE LinkedIn DM. Resolved before the gate
     // call because the per-channel allowance depends on which channel we would actually use.
-    const isChaser = triggerReason.startsWith("chaser_");
+    const isChaser = effectiveTrigger.startsWith("chaser_");
     const chaserChannel = String(contact.connection_status ?? "") === "Accepted"
       ? "LinkedIn DM" : "LinkedIn inMail";
     if (isChaser) mapped.channel = chaserChannel;
 
-    const requested = triggerReason === "follow_up" ? "reply"
+    const requested = effectiveTrigger === "follow_up" ? "reply"
                     : isChaser ? "chaser"
                     : "initial_message";
 
@@ -271,9 +351,13 @@ Deno.serve(async (req) => {
       .eq("agent_produced", true)
       .limit(1)
       .maybeSingle();
-    if (existingDraft && !dryRun) {
+    if (existingDraft && !dryRun && isManual) {
+      // Regenerate means replace: the old agent draft is superseded, never silently kept.
+      await supabase.from("outreach_log").update({ draft_status: "superseded", rejection_feedback: { reason: "regenerated", detail: `Superseded by a manual regenerate on ${new Date().toISOString().slice(0, 10)}.` } }).eq("id", existingDraft.id);
+      console.log(JSON.stringify({ event: "regenerate_superseded", contact_id: contact.id, superseded_touch_id: existingDraft.id }));
+    } else if (existingDraft && !dryRun) {
       console.log(JSON.stringify({ event: "dedup_skipped", contact_id: contact.id, existing_touch_id: existingDraft.id, existing_created_at: existingDraft.created_at }));
-      return json(200, { status: "dedup_skipped", existing_touch_id: existingDraft.id, message: "Draft already exists in Pending Review, not creating duplicate" });
+      return json(200, { status: "dedup_skipped", existing_touch_id: existingDraft.id, message: "A draft for this contact is already in Pending Review." });
     }
 
     // deno-lint-ignore no-explicit-any
@@ -309,6 +393,9 @@ Deno.serve(async (req) => {
     // Only the last 30 days count as "live" thread context; older messages are summarised as a
     // re-engagement note so stale threads never derail the draft (older = stale, ignore the detail).
     const allPrev = prevRows ?? [];
+    // F9.5b: the target language is decided here, explicitly, and told to the model.
+    const target = resolveTargetLanguage(allPrev, contact.language_code, company?.country ?? null);
+    console.log(JSON.stringify({ event: "language_resolved", contact_id: contact.id, language: target.language, reason: target.reason }));
     const cutoff = new Date(Date.now() - 30 * 86400000).toISOString().slice(0, 10);
     const recent = allPrev.filter((r) => String(r.touch_date ?? "") >= cutoff);
     const older = allPrev.filter((r) => String(r.touch_date ?? "") < cutoff);
@@ -394,7 +481,7 @@ Deno.serve(async (req) => {
     // F6.6: next_action, background_notes and conversation_summary, clearly labelled, with the
     // two rules stated in the prompt text (gates override notes; note dates matter).
     const notesBlock = contactNotesBlock({ next_action: contact.next_action, next_action_date: contact.next_action_date, background_notes: contact.background_notes, conversation_summary: contact.conversation_summary, today: todayIso });
-    const userPrompt = `DRAFT REQUEST\n\nTrigger: ${triggerReason}\nMessage type: ${mapped.touch_type} via ${mapped.channel}\nChannel: ${mapped.channel}\nIntent: ${mapped.intent}\nPath: ${path}\nFrame: ${frame}\nArc: ${arc}\n\nCONTACT\nName: ${contact.first_name ?? ""} ${contact.last_name ?? ""}\nTitle: ${contact.job_title ?? ""}\nSeniority: ${contact.seniority ?? ""}\nFunction: ${contact.function ?? ""}\nLocation: ${contact.location ?? ""}\nLinkedIn URL: ${contact.linkedin_url ?? ""}\nLanguage: ${contact.language_code ?? "not recorded (write in the language of the prior thread, else the company market language)"}\nRegister: ${registerLine(contact.formality, contact.language_code)}\n\nCOMPANY\nName: ${co.company_name ?? ""}\nCountry: ${co.country ?? ""}\nCategory: ${Array.isArray(co.category) ? co.category.join(", ") : (co.category ?? "")}\nPriority: ${co.priority ?? ""}\nIndustry: ${co.industry ?? ""}\nProduct line: ${co.product_line ?? ""}\nInsurance offered: ${co.insurance_offered ?? ""}\nInsurance provider: ${co.insurance_provider ?? ""}\nCoverage summary: ${co.coverage_summary ?? ""}\nUSP notes: ${co.usp_notes ?? ""}\nAdditional notes: ${co.additional_notes ?? ""}\nEstimated revenue: ${co.estimated_revenue_gbp ?? ""}\nEmployees: ${co.employees ?? ""}\nMonthly visits: ${co.monthly_visits ?? ""}\n\n${notesBlock}\n\nPREVIOUS OUTREACH (background only - never mention it in the message)\n${threadText}\n\nTASK\nWrite the single ${mapped.channel} message ${sender} should send to this contact now, applying the loaded PIER_Rules, LinkedIn_Message_Architect, Lead_and_ICP_Brief, OUTREACH_QUICK_REFERENCE, and PIER_Response_Bank. This message is a "${mapped.touch_type}": ${mapped.intent} If prior outreach exists, write a natural forward message (re-engagement) - never a first-touch opener and never a comment on the history.\n\nSign off: ${sender}\n\nReturn ONLY the JSON object described in the drafting directive. The "message" value is what ${sender} sends: no preamble, no meta-commentary, no notes about prior messages, no subject line.`;
+    const userPrompt = `DRAFT REQUEST\n\nTrigger: ${triggerReason}\nMessage type: ${mapped.touch_type} via ${mapped.channel}\nChannel: ${mapped.channel}\nIntent: ${mapped.intent}\nPath: ${path}\nFrame: ${frame}\nArc: ${arc}\n\nCONTACT\nName: ${contact.first_name ?? ""} ${contact.last_name ?? ""}\nTitle: ${contact.job_title ?? ""}\nSeniority: ${contact.seniority ?? ""}\nFunction: ${contact.function ?? ""}\nLocation: ${contact.location ?? ""}\nLinkedIn URL: ${contact.linkedin_url ?? ""}\nLanguage: WRITE IN ${LANG_NAMES[target.language] ?? target.language} (${target.language}). Reason: ${target.reason}. This overrides the contact's Language field.\nRegister: ${registerLine(contact.formality, target.language)}\n\nCOMPANY\nName: ${co.company_name ?? ""}\nCountry: ${co.country ?? ""}\nCategory: ${Array.isArray(co.category) ? co.category.join(", ") : (co.category ?? "")}\nPriority: ${co.priority ?? ""}\nIndustry: ${co.industry ?? ""}\nProduct line: ${co.product_line ?? ""}\nInsurance offered: ${co.insurance_offered ?? ""}\nInsurance provider: ${co.insurance_provider ?? ""}\nCoverage summary: ${co.coverage_summary ?? ""}\nUSP notes: ${co.usp_notes ?? ""}\nAdditional notes: ${co.additional_notes ?? ""}\nEstimated revenue: ${co.estimated_revenue_gbp ?? ""}\nEmployees: ${co.employees ?? ""}\nMonthly visits: ${co.monthly_visits ?? ""}\n\n${notesBlock}\n\nPREVIOUS OUTREACH (background only - never mention it in the message)\n${threadText}\n\nTASK\nWrite the single ${mapped.channel} message ${sender} should send to this contact now, applying the loaded PIER_Rules, LinkedIn_Message_Architect, Lead_and_ICP_Brief, OUTREACH_QUICK_REFERENCE, and PIER_Response_Bank. This message is a "${mapped.touch_type}": ${mapped.intent} If prior outreach exists, write a natural forward message (re-engagement) - never a first-touch opener and never a comment on the history.\n\nSign off: ${sender}\n\nReturn ONLY the JSON object described in the drafting directive. The "message" value is what ${sender} sends: no preamble, no meta-commentary, no notes about prior messages, no subject line.`;
 
     let messageBody = "";
     let draftNarrative: string | null = null;
@@ -460,6 +547,23 @@ Deno.serve(async (req) => {
       messageBody = "[Draft generation failed, please write manually]";
     }
 
+    // F9.6: the contract says the message ends with the sender's first name.
+    let signOffAppended = false;
+    if (!generationFailed) {
+      const so = ensureSignOff(messageBody, sender);
+      messageBody = so.message;
+      signOffAppended = so.appended;
+      if (so.appended) console.warn(JSON.stringify({ event: "sign_off_appended", contact_id: contact.id, sender }));
+    }
+    // F9.5a: the label must show the language of the DRAFT. Detect it from the body; the
+    // resolved target is the fallback when the detector cannot tell.
+    const detected = generationFailed ? null : detectLanguage(messageBody);
+    const draftLanguage = detected ?? target.language;
+    const draftLanguageReason = detected && detected !== target.language
+      ? `${target.reason}; body detected as ${detected}, label follows the body`
+      : target.reason;
+    if (detected && detected !== target.language) console.warn(JSON.stringify({ event: "language_mismatch", contact_id: contact.id, target: target.language, detected }));
+
     const lint = generationFailed ? { score: 0, pass: false, violations: [{ type: "generation_error", note: "Anthropic call failed; placeholder inserted" }] as unknown[] } : preLint(messageBody);
 
     // B2 verification path: dry_run exercises the full generation (so cache behaviour is
@@ -467,7 +571,7 @@ Deno.serve(async (req) => {
     // test drafts in Pending Review for Oli to clean up.
     if (dryRun) {
       console.log(JSON.stringify({ event: "draft_dry_run", contact_id: contact.id, usage, estimated_cost_gbp: costGbp }));
-      return json(200, { status: "dry_run", contact_id: contact.id, sender, usage, estimated_cost_gbp: costGbp, narrative: draftNarrative, guardrails: draftGuardrails, message_preview: messageBody.slice(0, 300), lint_score: lint.score });
+      return json(200, { status: "dry_run", contact_id: contact.id, sender, usage, estimated_cost_gbp: costGbp, narrative: draftNarrative, guardrails: draftGuardrails, message_preview: messageBody.slice(0, 300), message: messageBody, lint_score: lint.score, draft_language: draftLanguage, draft_language_reason: draftLanguageReason, sign_off_appended: signOffAppended });
     }
 
     const today = new Date().toISOString().slice(0, 10);
@@ -478,6 +582,7 @@ Deno.serve(async (req) => {
       pre_lint_pass: lint.pass, voice_contract_violations: lint.violations, lint_score: lint.score,
       path, recommended_frame: frame, recommended_arc: arc, touch_date: today, sent_by: sender,
       draft_narrative: draftNarrative, draft_guardrails: draftGuardrails,
+      draft_language: draftLanguage, draft_language_reason: draftLanguageReason,
     };
     const { data: inserted, error: insErr } = await supabase.from("outreach_log").insert(insertRow).select("id").single();
     if (insErr) throw insErr;
@@ -496,7 +601,7 @@ Deno.serve(async (req) => {
     }
 
     console.log(JSON.stringify({ event: "draft_created", touch_id: inserted.id, contact_id: contact.id, sender, lint_score: lint.score, pass: lint.pass, generation_failed: generationFailed }));
-    return json(200, { status: generationFailed ? "generation_failed" : "created", touch_id: inserted.id, sender, message_preview: messageBody.slice(0, 200), narrative: draftNarrative, guardrails: draftGuardrails, usage, estimated_cost_gbp: costGbp, pre_lint_pass: lint.pass, lint_score: lint.score, path, frame, gen_error: genError || undefined });
+    return json(200, { status: generationFailed ? "generation_failed" : "created", touch_id: inserted.id, sender, draft_language: draftLanguage, draft_language_reason: draftLanguageReason, sign_off_appended: signOffAppended, message_preview: messageBody.slice(0, 200), narrative: draftNarrative, guardrails: draftGuardrails, usage, estimated_cost_gbp: costGbp, pre_lint_pass: lint.pass, lint_score: lint.score, path, frame, gen_error: genError || undefined });
   } catch (e) {
     console.error(JSON.stringify({ event: "handler_error", message: (e as Error).message ?? String(e) }));
     return json(500, { error: "internal_error", detail: (e as Error).message ?? "unknown" });
