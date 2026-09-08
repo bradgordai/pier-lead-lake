@@ -4,7 +4,7 @@ import { callAnthropicWithSentinel, BudgetExceededError } from "./_shared/anthro
 // F6.6/F6.7: contact notes go into the prompt as a labelled block with two rules (gates override
 // notes; note dates matter), and the AI section of contacts.conversation_summary is refreshed
 // with a short state-of-play after every draft. v28.
-// F9.5/F9.6 (v29, v30): explicit target-language resolution (prior thread > contact Language > market
+// F9.5/F9.6 (v29-v31): explicit target-language resolution (prior thread > contact Language > market
 // default), draft_language recorded from the generated body, sign-off enforced.
 import { contactNotesBlock, mergeAiStateOfPlay } from "./_shared/conversation-summary.ts";
 
@@ -282,9 +282,21 @@ Deno.serve(async (req) => {
     if (cErr) throw cErr;
     if (!contact) return json(404, { error: "contact_not_found" });
     if (isManual && !effectiveTrigger) {
-      // A contact who replied gets a follow-up; anyone else gets the opener.
-      effectiveTrigger = (String(contact.chase_state ?? "") === "replied" || String(contact.outreach_status ?? "") === "In conversation") ? "follow_up" : "cr_accepted";
+      // No touch type named (the contact popout's Generate button): pick the NEXT step of
+      // the cadence from what has actually gone out. Replied -> follow-up; nothing sent ->
+      // opener; opener sent -> chaser 1; chaser n sent -> chaser n+1 (capped at 3).
+      if (String(contact.chase_state ?? "") === "replied" || String(contact.outreach_status ?? "") === "In conversation") {
+        effectiveTrigger = "follow_up";
+      } else {
+        const { data: lastSent } = await supabase.from("outreach_log").select("touch_type")
+          .eq("team_id", PIER_TEAM_ID).eq("contact_id", contact.id).eq("send_status", "Sent")
+          .in("touch_type", ["Initial message", "Chaser 1", "Chaser 2", "Chaser 3", "Follow up"])
+          .order("touch_date", { ascending: false }).limit(1).maybeSingle();
+        const NEXT: Record<string, string> = { "Initial message": "chaser_1", "Chaser 1": "chaser_2", "Chaser 2": "chaser_3", "Chaser 3": "chaser_3", "Follow up": "follow_up" };
+        effectiveTrigger = NEXT[String(lastSent?.touch_type ?? "")] ?? "cr_accepted";
+      }
       Object.assign(mapped, TRIGGER_MAP[effectiveTrigger]);
+      console.log(JSON.stringify({ event: "manual_regenerate_resolved", contact_id: contact.id, effective_trigger: effectiveTrigger }));
     }
 
     // C5 REFUSAL GATES. Oli requirement 5a: the draft call must be able to return a
@@ -572,7 +584,7 @@ Deno.serve(async (req) => {
     // test drafts in Pending Review for Oli to clean up.
     if (dryRun) {
       console.log(JSON.stringify({ event: "draft_dry_run", contact_id: contact.id, usage, estimated_cost_gbp: costGbp }));
-      return json(200, { status: "dry_run", contact_id: contact.id, sender, usage, estimated_cost_gbp: costGbp, narrative: draftNarrative, guardrails: draftGuardrails, message_preview: messageBody.slice(0, 300), message: messageBody, lint_score: lint.score, draft_language: draftLanguage, draft_language_reason: draftLanguageReason, sign_off_appended: signOffAppended });
+      return json(200, { status: "dry_run", contact_id: contact.id, sender, usage, estimated_cost_gbp: costGbp, narrative: draftNarrative, guardrails: draftGuardrails, message_preview: messageBody.slice(0, 300), message: messageBody, lint_score: lint.score, draft_language: draftLanguage, draft_language_reason: draftLanguageReason, sign_off_appended: signOffAppended, touch_type: mapped.touch_type, effective_trigger: effectiveTrigger });
     }
 
     const today = new Date().toISOString().slice(0, 10);
@@ -602,7 +614,7 @@ Deno.serve(async (req) => {
     }
 
     console.log(JSON.stringify({ event: "draft_created", touch_id: inserted.id, contact_id: contact.id, sender, lint_score: lint.score, pass: lint.pass, generation_failed: generationFailed }));
-    return json(200, { status: generationFailed ? "generation_failed" : "created", touch_id: inserted.id, sender, draft_language: draftLanguage, draft_language_reason: draftLanguageReason, sign_off_appended: signOffAppended, message_preview: messageBody.slice(0, 200), narrative: draftNarrative, guardrails: draftGuardrails, usage, estimated_cost_gbp: costGbp, pre_lint_pass: lint.pass, lint_score: lint.score, path, frame, gen_error: genError || undefined });
+    return json(200, { status: generationFailed ? "generation_failed" : "created", touch_id: inserted.id, sender, draft_language: draftLanguage, draft_language_reason: draftLanguageReason, sign_off_appended: signOffAppended, touch_type: mapped.touch_type, message_preview: messageBody.slice(0, 200), narrative: draftNarrative, guardrails: draftGuardrails, usage, estimated_cost_gbp: costGbp, pre_lint_pass: lint.pass, lint_score: lint.score, path, frame, gen_error: genError || undefined });
   } catch (e) {
     console.error(JSON.stringify({ event: "handler_error", message: (e as Error).message ?? String(e) }));
     return json(500, { error: "internal_error", detail: (e as Error).message ?? "unknown" });
