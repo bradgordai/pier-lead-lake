@@ -1,4 +1,4 @@
-// Edge Function: capture-and-classify-reply  (v18, F8 2026-09-08)
+// Edge Function: capture-and-classify-reply  (v19, F8 2026-09-08; F11.3 inbound replies are terminal)
 //
 // Every LinkedIn inbox message reaches this function: from Make "Pier Inbox Watcher"
 // (scenario 9704543, fed by the Inbox Scraper phantom's webhook every 4 hours), from the
@@ -419,7 +419,9 @@ async function fileInbound(contactId: string, p: Payload, key: string): Promise<
   const { data: inserted, error: insErr } = await supabase.from("outreach_log").insert({
     team_id: PIER_TEAM_ID, touch_id: `reply-${crypto.randomUUID()}`, contact_ref: contact.contact_id ?? null, contact_id: contact.id,
     company_id: contact.company_id ?? null, channel: "LinkedIn DM", touch_type: "Reply", message_body: body, reply_content: body,
-    reply_received_at: when, thread_id: extractUuid(p.threadUrl), draft_status: "pending_review", send_status: "Sent",
+    // F11.3: an inbound reply is a fact, not a draft awaiting review. Terminal status, same
+    // as every migrated Reply row, so it never inflates the pending-review count.
+    reply_received_at: when, thread_id: extractUuid(p.threadUrl), draft_status: "sent", send_status: "Sent",
     migrated_legacy: false, agent_produced: false, touch_date: day, external_key: key,
   }).select("id").single();
   if (insErr) throw insErr;
