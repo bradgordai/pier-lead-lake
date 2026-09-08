@@ -1,4 +1,4 @@
-// Edge Function: capture-and-classify-reply  (v17, F8 2026-09-08)
+// Edge Function: capture-and-classify-reply  (v18, F8 2026-09-08)
 //
 // Every LinkedIn inbox message reaches this function: from Make "Pier Inbox Watcher"
 // (scenario 9704543, fed by the Inbox Scraper phantom's webhook every 4 hours), from the
@@ -468,7 +468,13 @@ async function queueOrphan(p: Payload, key: string, candidates: Candidate[]): Pr
     payload: p, candidates, status: "open",
   });
   if (error) {
-    if (String(error.code) === "23505") return "already_queued";
+    if (String(error.code) === "23505") {
+      // Already queued by an earlier pass: refresh the suggestions if the ladder has learned since.
+      if (candidates.length) {
+        await supabase.from("unmatched_replies").update({ candidates }).eq("team_id", PIER_TEAM_ID).eq("external_key", key).eq("status", "open").eq("candidates", "[]");
+      }
+      return "already_queued";
+    }
     throw error;
   }
   return "queued";
