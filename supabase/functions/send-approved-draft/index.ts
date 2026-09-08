@@ -42,11 +42,20 @@ const TEST_MODE = (Deno.env.get("TEST_MODE") ?? "true").toLowerCase() !== "false
 // Exact allowed test recipient. This is the last line of defence before a launch.
 const BRAD_TEST_URL = "https://www.linkedin.com/in/bradley-gordon-749861170";
 
-const PHANTOM_DM = "5691059901018698";  // Pier LinkedIn Message Sender
-const PHANTOM_CR = "7500783933729451";  // Pier LinkedIn Auto Connect
+const PHANTOM_DM = "5691059901018698";      // Pier LinkedIn Message Sender
+const PHANTOM_CR = "7500783933729451";      // Pier LinkedIn Auto Connect
+// F7 (2026-09-08): Sales Navigator Message Sender, sendInMail=true. Verified live: it takes
+// `spreadsheetUrl` (a single Sales Nav OR public profile URL), `message`, `sendInMail` and
+// `inMailSubject` (required when sending an InMail). Its notifications.webhook points at the
+// same Make "Pier Send Callback" hook as the DM phantom, so send-approved-callback closes the
+// loop identically (Sent on a populated resultObject, Cancelled + ledger reversal otherwise).
+const PHANTOM_INMAIL = "8651232052097344";  // Pier Sales Navigator Message Sender
 
 const DM_DAILY_LIMIT = 15;
 const CR_WEEKLY_LIMIT = 120;
+// InMail capacity: LinkedIn's monthly ceiling on the account (matches MONTHLY_CAP_INMAILS in
+// the app), AND the credit ledger must hold at least one credit. Both are checked before launch.
+const INMAIL_MONTHLY_LIMIT = 150;
 
 // Statuses that must never receive an automated send.
 const NO_SEND = new Set(["Do not contact", "Left company", "Not relevant"]);
@@ -96,7 +105,7 @@ Deno.serve(async (req) => {
 
   try {
     const { data: row, error: rErr } = await supabase.from("outreach_log")
-      .select("id, contact_id, channel, touch_type, message_body, draft_status, send_status")
+      .select("id, contact_id, channel, touch_type, message_body, subject_line, draft_status, send_status")
       .eq("team_id", PIER_TEAM_ID).eq("id", rowId).maybeSingle();
     if (rErr) throw rErr;
     if (!row) return json(404, { error: "draft_not_found" });
@@ -107,7 +116,7 @@ Deno.serve(async (req) => {
     }
 
     const { data: contact, error: cErr } = await supabase.from("contacts")
-      .select("id, first_name, last_name, linkedin_url, linkedin_slug, outreach_status")
+      .select("id, first_name, last_name, linkedin_url, linkedin_sales_nav_url, linkedin_slug, outreach_status")
       .eq("team_id", PIER_TEAM_ID).eq("id", row.contact_id).maybeSingle();
     if (cErr) throw cErr;
     if (!contact) return json(404, { error: "contact_not_found" });
@@ -118,8 +127,8 @@ Deno.serve(async (req) => {
     }
 
     const channel = String(row.channel);
-    if (channel === "LinkedIn inMail") return json(200, { status: "inmail_not_wired", detail: "InMail send is a separate build", test_mode: TEST_MODE });
-    if (channel !== "LinkedIn DM" && channel !== "LinkedIn CR") return json(200, { status: "channel_not_supported", channel, test_mode: TEST_MODE });
+    // F7: the inmail_not_wired guard is lifted; InMail dispatches through the Sales Nav sender.
+    if (channel !== "LinkedIn DM" && channel !== "LinkedIn CR" && channel !== "LinkedIn inMail") return json(200, { status: "channel_not_supported", channel, test_mode: TEST_MODE });
 
     // Capacity guard runs BEFORE any launch, and applies in TEST_MODE too - the platform
     // limit is per LinkedIn account and a test send consumes real quota.
@@ -131,6 +140,22 @@ Deno.serve(async (req) => {
         console.warn(JSON.stringify({ event: "capacity_exceeded", channel: "dm", count, limit: DM_DAILY_LIMIT, test_mode: TEST_MODE }));
         return json(200, { status: "capacity_exceeded", channel: "dm", count: count ?? 0, limit: DM_DAILY_LIMIT, test_mode: TEST_MODE });
       }
+    } else if (channel === "LinkedIn inMail") {
+      const monthStart = new Date().toISOString().slice(0, 8) + "01";
+      const { count } = await supabase.from("outreach_log").select("id", { count: "exact", head: true })
+        .eq("team_id", PIER_TEAM_ID).eq("channel", "LinkedIn inMail").eq("send_status", "Sent").gte("touch_date", monthStart);
+      if ((count ?? 0) >= INMAIL_MONTHLY_LIMIT) {
+        console.warn(JSON.stringify({ event: "capacity_exceeded", channel: "inmail", count, limit: INMAIL_MONTHLY_LIMIT, test_mode: TEST_MODE }));
+        return json(200, { status: "capacity_exceeded", channel: "inmail", count: count ?? 0, limit: INMAIL_MONTHLY_LIMIT, test_mode: TEST_MODE });
+      }
+      // Credit ledger: no credit, no launch. The charge itself lands after a successful launch.
+      const { data: led } = await supabase.from("inmail_credit_ledger").select("balance_after")
+        .eq("team_id", PIER_TEAM_ID).order("created_at", { ascending: false }).limit(1).maybeSingle();
+      const balance = Number(led?.balance_after ?? 0);
+      if (balance < 1) {
+        console.warn(JSON.stringify({ event: "inmail_credits_exhausted", balance, test_mode: TEST_MODE }));
+        return json(200, { status: "inmail_credits_exhausted", balance, test_mode: TEST_MODE });
+      }
     } else {
       const { count } = await supabase.from("outreach_log").select("id", { count: "exact", head: true })
         .eq("team_id", PIER_TEAM_ID).eq("channel", "LinkedIn CR").eq("send_status", "Sent").gte("touch_date", mondayIso());
@@ -141,9 +166,13 @@ Deno.serve(async (req) => {
     }
 
     const messageText = stripHtml(String(row.message_body ?? ""));
-    if (!messageText && channel === "LinkedIn DM") return json(200, { status: "empty_message", test_mode: TEST_MODE });
+    if (!messageText && channel !== "LinkedIn CR") return json(200, { status: "empty_message", test_mode: TEST_MODE });
 
-    const realUrl = trimSlash(String(contact.linkedin_url ?? ""));
+    // InMail goes to the Sales Nav profile when we hold one, else the public profile URL
+    // (the Sales Nav sender accepts either). DM and CR keep using the public URL.
+    const realUrl = channel === "LinkedIn inMail"
+      ? (trimSlash(String(contact.linkedin_sales_nav_url ?? "")) || trimSlash(String(contact.linkedin_url ?? "")))
+      : trimSlash(String(contact.linkedin_url ?? ""));
     const recipientUrl = TEST_MODE ? BRAD_TEST_URL : realUrl;
 
     // HARD GUARD. In TEST_MODE nothing but Brad's own profile may ever be launched at.
@@ -160,7 +189,7 @@ Deno.serve(async (req) => {
       return json(500, { error: "server_misconfigured", detail: "PHANTOMBUSTER_API_KEY not set" });
     }
 
-    const agentId = channel === "LinkedIn DM" ? PHANTOM_DM : PHANTOM_CR;
+    const agentId = channel === "LinkedIn DM" ? PHANTOM_DM : channel === "LinkedIn inMail" ? PHANTOM_INMAIL : PHANTOM_CR;
 
     // Read the phantom's saved argument and override ONLY the recipient + message, so the
     // sessionCookie / userAgent / proxy settings round-trip untouched. Launching with a
@@ -181,6 +210,14 @@ Deno.serve(async (req) => {
     if (channel === "LinkedIn DM") {
       merged.spreadsheetUrl = recipientUrl;   // real key; NOT profileUrls
       merged.message = messageText;
+    } else if (channel === "LinkedIn inMail") {
+      merged.spreadsheetUrl = recipientUrl;
+      merged.message = messageText;
+      merged.sendInMail = true;
+      // The phantom requires a subject for an InMail. The row's subject line wins; the
+      // fallback is deliberately plain so a missing subject never blocks a send.
+      merged.inMailSubject = stripHtml(String(row.subject_line ?? "")) || "Pier Insurance";
+      merged.numberOfProfilesPerLaunch = 1;
     } else {
       merged.inputType = "profileUrl";
       merged.profileUrl = recipientUrl;       // real key; NOT profileUrls
@@ -225,8 +262,7 @@ Deno.serve(async (req) => {
     // F1 (2026-09-07): an InMail costs a credit the moment it is dispatched. The ledger
     // function is idempotent per row, so a retried launch cannot double-charge. The
     // callback reverses the charge if the phantom reports the send did not complete.
-    // Today InMail is not wired (see the inmail_not_wired guard above), so this only runs
-    // once that guard is lifted; it is here so the credit is never forgotten when it is.
+    // F7 (2026-09-08): the guard is lifted, so this now runs on every InMail dispatch.
     let inmailBalance: number | null = null;
     if (channel === "LinkedIn inMail") {
       const { data: bal, error: lErr } = await supabase.rpc("fn_ledger_inmail_send", { p_outreach_log_id: rowId, p_user_id: null });
