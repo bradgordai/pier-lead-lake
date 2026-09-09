@@ -181,7 +181,11 @@ Deno.serve(async (req) => {
           .eq("id", cid).or("website_url.is.null,website_url.eq.")
           .select("id");
         if (error) continue;
-        if (upd && upd.length) autoWritten++; else skippedExisting++;
+        if (upd && upd.length) {
+          autoWritten++;
+          // F12 T4: a found website is INFERRED, never stated. Mark it so the UI renders it distinctly.
+          await supabase.rpc("fn_set_field_provenance", { p_company_id: cid, p_field: "website_url", p_source: "inferred", p_basis: `Apify Google Search, top organic result (confidence ${cls.conf})` });
+        } else skippedExisting++;
       } else {
         const { error } = await supabase.from("company_enrichment_queue").insert({
           team_id: PIER_TEAM_ID, company_id: cid, suggested_field: "website_url",
