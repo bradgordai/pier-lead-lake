@@ -1,4 +1,4 @@
-// Edge Function: upsert-contact-from-sales-nav
+// Edge Function: upsert-contact-from-sales-nav  (v-F12, 2026-09-09: two URL fields, degree stored, fail closed)
 //
 // Called by Make.com after the Sales Nav "List Export" phantom fires, once per lead.
 // Flow: verify shared secret -> dedupe (canonical linkedin_slug first, then URL) ->
@@ -228,11 +228,22 @@ Deno.serve(async (req) => {
   const connectionDegree = String(body?.connectionDegree ?? "").trim();
   const listName = String(body?.listName ?? "").trim();
 
-  // URL canonicalization (migration 031): prefer the public /in/ URL for storage + slug.
+  // URL canonicalization (migration 031, tightened by F12 T3 / migration 075): the two URL
+  // fields are two trusted fields. linkedin_url holds ONLY a public /in/ URL; the Sales Nav
+  // /sales/lead/ URL goes to linkedin_sales_nav_url. The DB refuses anything else.
   const linkedInProfileUrl = String(body?.linkedInProfileUrl ?? "").trim();
-  const storedLinkedinUrl = normalizeUrl(linkedInProfileUrl || profileUrl);
+  const isSalesNav = (u: string) => /linkedin\.com\/sales\//i.test(u);
+  const publicCandidate = [linkedInProfileUrl, profileUrl].map(normalizeUrl).find((u) => u && /linkedin\.com\/in\//i.test(u)) ?? null;
+  const salesNavCandidate = [profileUrl, linkedInProfileUrl].map(normalizeUrl).find((u) => u && isSalesNav(u)) ?? null;
+  const storedLinkedinUrl = publicCandidate;                       // null if only /sales/lead/ available
+  const storedSalesNavUrl = salesNavCandidate ? salesNavCandidate.replace(/,NAME_SEARCH,.*$/i, "") : null;
   const profileUrlNorm = normalizeUrl(profileUrl);
   const slug = extractSlug(linkedInProfileUrl) ?? extractSlug(profileUrl); // null if only /sales/lead/
+  // F12 T3: the degree is data, not a hint. Sales Nav emits "1st" / "2nd" / "3rd" (sometimes with
+  // " degree"); anything else is unknown and a Request-sent row without a degree is refused by the
+  // DB (fail closed), so refuse it here with a clear error rather than let Make swallow it.
+  const degreeMatch = /^([123])(st|nd|rd)?(\s+degree)?$/i.exec(connectionDegree.trim());
+  const connectionLevel = degreeMatch ? ({ "1": "1st degree", "2": "2nd degree", "3": "3rd degree" } as Record<string, string>)[degreeMatch[1]] : null;
 
   try {
     // ---------- 1. Dedupe: canonical slug first, then raw URL (backward compatible) ----------
@@ -245,10 +256,17 @@ Deno.serve(async (req) => {
       if (r.error) throw r.error;
       existing = r.data;
     }
-    if (!existing) {
+    if (!existing && storedLinkedinUrl) {
       const r = await supabase
         .from("contacts").select("id, contact_id, sn_lists, company_id, archived_at")
-        .eq("team_id", PIER_TEAM_ID).eq("linkedin_url", profileUrlNorm).limit(1).maybeSingle();
+        .eq("team_id", PIER_TEAM_ID).eq("linkedin_url", storedLinkedinUrl).limit(1).maybeSingle();
+      if (r.error) throw r.error;
+      existing = r.data;
+    }
+    if (!existing && storedSalesNavUrl) {
+      const r = await supabase
+        .from("contacts").select("id, contact_id, sn_lists, company_id, archived_at")
+        .eq("team_id", PIER_TEAM_ID).eq("linkedin_sales_nav_url", storedSalesNavUrl).limit(1).maybeSingle();
       if (r.error) throw r.error;
       existing = r.data;
     }
@@ -257,8 +275,15 @@ Deno.serve(async (req) => {
       // Assert: a live re-import should not be resolving a soft-deleted contact.
       if (existing.archived_at) console.warn(JSON.stringify({ event: "dedupe_on_archived_contact", contact_id: existing.id }));
       const nextLists = uniquePush(existing.sn_lists, listName);
+      // A re-import may carry a URL the row lacks: fill the blank field only, never overwrite.
+      const { data: cur } = await supabase.from("contacts").select("linkedin_url, linkedin_sales_nav_url, url_provenance").eq("id", existing.id).maybeSingle();
+      const fill: Record<string, unknown> = { sn_lists: nextLists, updated_at: new Date().toISOString() };
+      const prov = { ...((cur?.url_provenance as Record<string, unknown>) ?? {}) };
+      if (!cur?.linkedin_url && storedLinkedinUrl) { fill.linkedin_url = storedLinkedinUrl; prov.linkedin_url = { source: "watcher", at: new Date().toISOString(), basis: `Sales Nav list export: ${listName || "unnamed list"}` }; }
+      if (!cur?.linkedin_sales_nav_url && storedSalesNavUrl) { fill.linkedin_sales_nav_url = storedSalesNavUrl; prov.linkedin_sales_nav_url = { source: "watcher", at: new Date().toISOString(), basis: `Sales Nav list export: ${listName || "unnamed list"}` }; }
+      if (fill.linkedin_url || fill.linkedin_sales_nav_url) fill.url_provenance = prov;
       const { error: updErr } = await supabase
-        .from("contacts").update({ sn_lists: nextLists, updated_at: new Date().toISOString() }).eq("id", existing.id);
+        .from("contacts").update(fill).eq("id", existing.id);
       if (updErr) throw updErr;
       console.log(JSON.stringify({ event: "list_appended", contact_id: existing.id, sn_lists: nextLists }));
       return json(200, {
@@ -383,8 +408,16 @@ Deno.serve(async (req) => {
     // List Export phantom emits degree as "1st" / "2nd" / "3rd" (verified against
     // the live Make bundle 2026-08-26), so every 1st-degree lead was silently
     // classed as not-connected. isFirstDegree tolerates both spellings.
-    const isFirstDegree = /^1(st)?(\s+degree)?$/i.test(connectionDegree.trim());
+    const isFirstDegree = connectionLevel === "1st degree";
     const connectionStatus = isFirstDegree ? "Already connected" : "Request sent";
+    if (!isFirstDegree && !connectionLevel) {
+      console.error(JSON.stringify({ event: "degree_missing_refused", profileUrl, connectionDegree }));
+      return json(422, { error: "connection_degree_missing", detail: `connectionDegree "${connectionDegree}" is not 1st/2nd/3rd. A Request-sent contact must carry its degree (fail closed). Fix the phantom mapping in Make and resend.` });
+    }
+    const nowIso = new Date().toISOString();
+    const urlProvenance: Record<string, unknown> = {};
+    if (storedLinkedinUrl) urlProvenance.linkedin_url = { source: "watcher", at: nowIso, basis: `Sales Nav list export: ${listName || "unnamed list"}` };
+    if (storedSalesNavUrl) urlProvenance.linkedin_sales_nav_url = { source: "watcher", at: nowIso, basis: `Sales Nav list export: ${listName || "unnamed list"}` };
     const baseRow = {
       team_id: PIER_TEAM_ID,
       company_ref: companyRef,          // NOT NULL; '' when unmatched (approved)
@@ -393,11 +426,14 @@ Deno.serve(async (req) => {
       last_name: lastName,
       job_title: headline,              // from headline
       location,
-      linkedin_url: storedLinkedinUrl,  // prefer public /in/ URL (migration 031)
-      linkedin_slug: slug,              // canonical slug; null if only /sales/lead/ available
+      linkedin_url: storedLinkedinUrl,          // public /in/ URL only (null if none)
+      linkedin_sales_nav_url: storedSalesNavUrl, // /sales/lead/ URL only (null if none)
+      url_provenance: urlProvenance,
+      linkedin_slug: slug,                       // canonical slug; null if only /sales/lead/ available
       source_list: listName || null,
       sn_lists: listName ? [listName] : [],
       connection_status: connectionStatus,
+      connection_level: connectionLevel,
       outreach_status: "Not started",
       // date_added / created_at / updated_at use their column defaults
     };

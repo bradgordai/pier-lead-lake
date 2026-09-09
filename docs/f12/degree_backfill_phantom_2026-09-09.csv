@@ -1,0 +1,270 @@
+contact_id,first_name,last_name,status,linkedin_url,linkedin_sales_nav_url,company_name
+P586,Martin,R.,Request sent,,"https://www.linkedin.com/sales/lead/ACwAAAL6HhQBMfguz9kNVh12U8D3cXPjPos_oQw,NAME_SEARCH,dnz8",GreenIT Ireland
+P587,Daniel,Ramos,Request sent,,https://www.linkedin.com/sales/lead/ACwAAACuYVUBiTH763oUgqZYByvkQbTcBhrsknA,K-tuin
+P589,Carlos,de Nacho,Request sent,,https://www.linkedin.com/sales/lead/ACwAAAqcxPIBSPmM-bGro3hmMT9iu-68cphz_IE,K-tuin
+P590,Juan,Fernández Martínez,Request sent,,https://www.linkedin.com/sales/lead/ACwAAEBSXJUBE1NogpOomjKD0NCrtPANIY9SmEk,K-tuin
+P591,David,Resa Polo,Request sent,,https://www.linkedin.com/sales/lead/ACwAABL5QrEBns9pjVbeK1BntrmXpZ0WcJismxw,K-tuin
+P593,Enrico,Palestro,Request sent,,https://www.linkedin.com/sales/lead/ACwAACom34YBhzvdNyV4rtqwTO_ySvt1sAQt9Zk,Yeppon
+P594,Marco,Vitali,Request sent,,https://www.linkedin.com/sales/lead/ACwAAAyGlH8BYpKylVc_vadkIF2Cq22Coqsl4bk,Yeppon
+P634,Gábor,Ponicsán,Request sent,https://www.linkedin.com/in/g%C3%A1bor-ponics%C3%A1n-2960945a,"https://www.linkedin.com/sales/lead/ACwAAAx4VZIBdZsJXIKKwy_Nh31H3IUT_n68wPA,NAME_SEARCH,6wgu",Magyar Telekom
+P655,Meik,Neuhaus,Request sent,https://de.linkedin.com/in/meikneuhaus,"https://www.linkedin.com/sales/lead/ACwAAA2FOikBl7sfLTLxQCxGlkgUE_GYodAuYWM,NAME_SEARCH,94X5",abo.express
+P656,Frederic,Cazaux,Request sent,https://www.linkedin.com/in/frederic-cazaux-1a65484b,"https://www.linkedin.com/sales/lead/ACwAAAqUpw4Bp1eenad-AsAfM1ENRDzozgm5LDg,NAME_SEARCH,pwnc",WeFix
+P658,Chloé,Martin Laborie,Request sent,https://www.linkedin.com/in/chloé-martin-laborie-5748b19a,"https://www.linkedin.com/sales/lead/ACwAABUiROgBUHFRYmxqPSov31k_3x0W81SIpT4,NAME_SEARCH,LLpY",WeFix
+P659,Zarouali,Abdeslem,Request sent,https://www.linkedin.com/in/zarouali-abdeslem-b8876314,"https://www.linkedin.com/sales/lead/ACwAAAL1lNgB2FvFlIvx4WYtlGxHmgDf01ZyQAk,NAME_SEARCH,csHo",Axitech
+P660,Lucas,van Reeken,Request sent,https://www.linkedin.com/in/lucas-van-reeken-72b7249,"https://www.linkedin.com/sales/lead/ACwAAAG1ZRMBGGu-CD8mkJRZbLy_iWG7pxsKMPk,NAME_SEARCH,ySSq",Mobiel.nl
+P661,Thomas,Borsboom,Request sent,https://www.linkedin.com/in/thomas-borsboom-78767b2,"https://www.linkedin.com/sales/lead/ACwAAAB0bZcBfDyGAhhHn5qZDeyLKAo0CP4wHvI,NAME_SEARCH,UUat",Mobiel.nl
+P662,Caroline,Prick,Request sent,https://www.linkedin.com/in/caroline-prick-7a107b15,"https://www.linkedin.com/sales/lead/ACwAAAMJFakBpToECdLYY8Yte7SYNKLRLGre6Hw,NAME_SEARCH,JpL0",bol.com
+P663,Luuc,Mannaerts,Request sent,https://www.linkedin.com/in/luuc-mannaerts,"https://www.linkedin.com/sales/lead/ACwAAAFQQ9QBFIf61KCvo33NzbBBMlX0teEbgiI,NAME_SEARCH,SLk_?_ntb=qxZQb8xHTru1RJw0%2BD1uVA%3D%3D",bol.com
+P664,Fiona,Vanderbroeck,Request sent,https://www.linkedin.com/in/fiona-vanderbroeck-b041261,"https://www.linkedin.com/sales/people/ACoAAAAyLLQBy8ggbU0gS-PmrFZxS0oAi_p4PD0,name,5Mzs/",bol.com
+P665,Kevin,Kujat,Request sent,https://www.linkedin.com/in/kevin-kujat-b5907870,"https://www.linkedin.com/sales/lead/ACwAAA71s3UBuw0Wr0uyVMhffPhC6Hju5N1W0_I,NAME_SEARCH,kaiJ",Talk-Point GmbH
+P681,Salvatore,Autovino,Request sent,https://www.linkedin.com/in/salvatore-autovino-a80a63197/,"https://www.linkedin.com/sales/lead/ACwAAC5AqEABobI-dnu8ZAOggLD8iUWi1rwWzGk,NAME_SEARCH,4x_r",ePrice
+P682,Vincenzo,Zizza,Request sent,https://www.linkedin.com/in/vincenzo-zizza-66203185/,"https://www.linkedin.com/sales/lead/ACwAABH6zWoBoyyQcWKMcApejplZWCJelho_3_4,NAME_SEARCH,FXU-",ePrice
+P683,Modesto,Donati,Request sent,https://www.linkedin.com/in/modesto-donati-7781b9217/,"https://www.linkedin.com/sales/lead/ACwAADarOAwBJlTI0iobb6u3igVbKkfOxnqGrgg,NAME_SEARCH,7r_r",ePrice
+P684,Wout,Wagemans,Request sent,https://www.linkedin.com/in/wout-wagemans-3a5932341/,"https://www.linkedin.com/sales/lead/ACwAAFW-vq0BbhHaty4SzLiUn07ra3KSnOcAQyQ,NAME_SEARCH,B8Mx",ReMarkt
+P686,Herold,Velema,Request sent,https://www.linkedin.com/in/heroldvelema/,"https://www.linkedin.com/sales/lead/ACwAAADbQGQBgPPFgJUliCMWoD_DTH5OXYThmUs,NAME_SEARCH,X9ZF",Computerzaak
+P687,Danny,Keizer,Request sent,https://www.linkedin.com/in/danny-keizer-84348017/,"https://www.linkedin.com/sales/lead/ACwAAANzbLMBbChLcfHAuLGuQIxtf9wb8mWgum4,NAME_SEARCH,-LjO",Computerzaak
+P688,Jordy,Sikkerle,Request sent,https://www.linkedin.com/in/jordy-sikkerle-611010237/,"https://www.linkedin.com/sales/lead/ACwAADrphG0BjSphNhkhfT5G3_d9Q-9u0aO7QVc,NAME_SEARCH,LiKg",Computerzaak
+P691,Zine El Abidine,Smiai,Request sent,https://www.linkedin.com/in/zine-el-abidine-smiai-b1a78b143/,"https://www.linkedin.com/sales/lead/ACwAACLSHIYBT9jyoavVwVEWBez-JIaLm3D7-jM,NAME_SEARCH,-9Wh",Media-Monster
+P692,Olivier,Bernaert,Request sent,https://www.linkedin.com/in/olivier-bernaert-84584850/,"https://www.linkedin.com/sales/lead/ACwAAArNnrUBbvR74x9njuohjtTxUjesVbDklIc,NAME_SEARCH,9rIZ",Microforce
+P693,Matthias,Degand,Request sent,https://www.linkedin.com/in/matthias-degand-4604b416b/,"https://www.linkedin.com/sales/lead/ACwAACh5eIgBN1nTwAPYCUr3EPoKWkmIRfVGcS0,NAME_SEARCH,agFv",PC-Occasion
+P695,Markus,Veimann,Request sent,https://www.linkedin.com/in/markus-veimann-325190183/,"https://www.linkedin.com/sales/lead/ACwAACtGVs0ByWMIUBNDQg1j3lNbj42ydJ49npg,NAME_SEARCH,gNu9",UPGREAT (UPGR8 OÜ)
+P704,Feyzi,Demirel,Request sent,https://www.linkedin.com/in/feyzi-demirel/,"https://www.linkedin.com/sales/lead/ACwAAA9f8mEBGm4Pmv7fpoGFXVEl2usTru-D4Ek,NAME_SEARCH,SoWf",Sparhandy (mobilezone GmbH)
+P705,Andrew,Reinhardt,Request sent,https://www.linkedin.com/in/andrewreinhardtceo/,"https://www.linkedin.com/sales/lead/ACwAABMyZ8EBI-HxCpTzdhoCh1FOqAtgtSwLfV4,NAME_SEARCH,eWvy",Sparhandy (mobilezone GmbH)
+P708,Markus,Lawrenz,Request sent,https://www.linkedin.com/in/markus-lawrenz-b206b957/,"https://www.linkedin.com/sales/lead/ACwAAAwHNggBSwXPeoLkmzXawJmQyAoHttQjZAo,NAME_SEARCH,wLhs",topi
+P710,David,Mignot,Request sent,https://www.linkedin.com/in/mignotdavid/,"https://www.linkedin.com/sales/lead/ACwAAAButwsB_xzgKRq3xRKDN6l6h8PC2G5qtk4,NAME_SEARCH,yk-R",YesYes
+P711,Gérald,Bourdin,Request sent,https://www.linkedin.com/in/gérald-bourdin-b95b83158/,"https://www.linkedin.com/sales/lead/ACwAACXnpuEBSnP4OFAvv1RUNnzGPmJvR96buQY,NAME_SEARCH,-LUJ",YesYes
+P716,Roger,Wassmer,Request sent,https://www.linkedin.com/in/roger-wassmer-378b0095/,"https://www.linkedin.com/sales/lead/ACwAABRGVgwBpj3laeah7d4dVJ3sMelBh98xmNQ,NAME_SEARCH,bVyn",jusit
+P720,Daniel,Augustin,Request sent,https://www.linkedin.com/in/daniel-augustin-digital-retail/,"https://www.linkedin.com/sales/lead/ACwAABoEl_EBamdA0iIafHKOH1HfzTgM4iLUjsU,NAME_SEARCH,8g1u",Interdiscount
+P723,Julius,Bolz,Request sent,https://www.linkedin.com/in/juliusbolz,"https://www.linkedin.com/sales/lead/ACwAAAwTUTABcoczcanP-r1BEEEpx3i76PXWFJc,NAME_SEARCH,6ame",Lendis
+P724,Stavros,Papadopoulos,Request sent,https://www.linkedin.com/in/s-papadopoulos,"https://www.linkedin.com/sales/lead/ACwAAA_mi5IBQPAltasjeM76Dd_CND5DnmvD3as,NAME_SEARCH,m9on",Lendis
+P725,Luis,Gatti,Request sent,https://www.linkedin.com/in/luis-gatti-2411bb15b,"https://www.linkedin.com/sales/lead/ACwAACZLgpEB5y9sQlDdbb7SQjXmL3xhpqdMo08,NAME_SEARCH,8u7M",Lendis
+P726,Heino,Deubner,Request sent,https://www.linkedin.com/in/heino-deubner,"https://www.linkedin.com/sales/lead/ACwAAAJuNF4BFjD1N5RWR0-ylPVw6Ke5kyl_r_g,NAME_SEARCH,sM_Z",Miete24
+P727,Michael,Reiss,Request sent,https://www.linkedin.com/in/michael-reiss-stuttgart/,"https://www.linkedin.com/sales/lead/ACwAAE7ACQAB-8vJkxbY4Zv9kIvb09u-IYjspVU,NAME_SEARCH,IjmK",Miete24
+P731,Ümit,Akbulut,Request sent,https://www.linkedin.com/in/%C3%BCmit-akbulut,"https://www.linkedin.com/sales/lead/ACwAAAkUM_0Bf_0Iyn76Oo13TdmmcxWcd7EELks,NAME_SEARCH,DX0f",Smieten
+P735,Željko,Drmić,Request sent,https://www.linkedin.com/in/%C5%BEeljko-drmi%C4%87-48856b149,"https://www.linkedin.com/sales/lead/ACwAACPbPugBi3793AbJHQ7lkW-cX-9WQgXfMcc,NAME_SEARCH,u9yZ",McSHARK
+P736,Pera,Jovicki,Request sent,https://www.linkedin.com/in/pera-jovicki-b63811bb,"https://www.linkedin.com/sales/lead/ACwAABmSLjsBOD02Vg-445JHwLFxiQmgAAJoykg,NAME_SEARCH,6nmF",McSHARK
+P737,Josip,Krajinovic,Request sent,https://www.linkedin.com/in/josip-krajinovic-a1688597,"https://www.linkedin.com/sales/lead/ACwAABSYv3IB27vcaPTuitsdWMp_xYTr7nFlLTA,NAME_SEARCH,9PL_",McSHARK
+P741,Emilie,Soleri,Request sent,https://www.linkedin.com/in/emilie-soleri-b683692a/,"https://www.linkedin.com/sales/lead/ACwAAAYarUABxMOZlqFNQIkpqQEeAQ0WGohyvkk,NAME_SEARCH,DWqx",Boulanger
+P742,Karim,Menni,Request sent,https://www.linkedin.com/in/karim-menni-52392a18a/,"https://www.linkedin.com/sales/lead/ACwAACyhtGsBkDd2Ra54oasZR4CFUav0umeSk3Q,NAME_SEARCH,0MtG",Boulanger
+P743,Merzak,Meddah,Request sent,https://www.linkedin.com/in/merzak-meddah-4a639612/,"https://www.linkedin.com/sales/lead/ACwAAAKMSD4B1RkSg3RAqu8YbdnKGs0_BUh4Qcc,NAME_SEARCH,ATHN",Electro Depot
+P744,Sylvie,Corrigou,Request sent,https://www.linkedin.com/in/sylvie-corrigou-51aa3339/,"https://www.linkedin.com/sales/lead/ACwAAAgpUiYBr1_n6AWmhcoUzL6fTYpma4LW14I,NAME_SEARCH,Xp7x",Electro Depot
+P745,Emmanuel,Soler,Request sent,https://www.linkedin.com/in/emmanuel-soler-b6ab904/,"https://www.linkedin.com/sales/lead/ACwAAADi44IB_e-qoEXiu7skzmAihb-qrYeEwMI,NAME_SEARCH,UEGH",La Poste Mobile
+P751,Ralf,Lenz,Request sent,https://www.linkedin.com/in/ralf-lenz-614545149/,"https://www.linkedin.com/sales/lead/ACwAACPadTABoQKwvAJUbgrOR7fgd3sexQEpA9k,NAME_SEARCH,kE2S",yourfone
+P754,Christin,Wehner,Request sent,https://www.linkedin.com/in/christin-wehner-a5864034b/,"https://www.linkedin.com/sales/lead/ACwAAFd7QeQBzAnnKEIquQUS0BU9gAmYZUS3Qi8,NAME_SEARCH,4jpy",Shifter
+P755,Johannes,Häner,Request sent,https://www.linkedin.com/in/johanneshaener/,"https://www.linkedin.com/sales/lead/ACwAAB1UleUBPEr0Ae69W6Lidis5UN5n9hvkNCY,NAME_SEARCH,abXV",topi
+P003,Marcel,Erian,Withdrawn,https://www.linkedin.com/in/marcelerian/,https://www.linkedin.com/sales/lead/ACwAAAo4MqcBJ0EU86AUnLJKyk0_GZ7FtX9nxTU,Rebuy
+P006,Michael,Falkensteiner,Withdrawn,https://www.linkedin.com/in/michaelfalkensteiner,https://www.linkedin.com/sales/lead/ACwAABiDMsEBhJgj281xcsVB4dqWqdeH6qKa0oA,T-Mobile (Deutsche Telekom)
+P010,Patrick,Höijer,Withdrawn,https://www.linkedin.com/in/patrick-höijer-a30b5a,https://www.linkedin.com/sales/lead/ACwAAAArokQBC8Z0jjh394H-Z8sBvKDKF48dUf4,Foxway
+P013,Mirco,Krebs,Withdrawn,https://www.linkedin.com/in/mirco-krebs,https://www.linkedin.com/sales/lead/ACwAAAF-3PMBLtVxIAvamdF8bFKy7hggSToqh2E,Lenovo
+P292,Bence,Blaumann,Withdrawn,https://www.linkedin.com/in/benceblaumann,"https://www.linkedin.com/sales/lead/ACwAABfN534BD0cco3kKD0ffCNIhHppw07cwi4s,NAME_SEARCH,SQvg",Flip
+P293,Cenk,Kücük,Withdrawn,https://www.linkedin.com/in/cenk-k%C3%BCc%C3%BCk-34b907281,"https://www.linkedin.com/sales/lead/ACwAAESn7SsBQsq3J9kmfBLb2wfBCfZ_NY0texE,NAME_SEARCH,piom?_ntb=v8pCpKQ9RjqsZMljgjo2oQ%3D%3D",Notebook-Pro NPH GmbH
+P364,Sebastian,Eismann,Withdrawn,https://www.linkedin.com/in/sebastian-eismann/,,Back Market
+P392,Fabian,Büchler,Withdrawn,,,BRACK.CH
+P393,Tobias,Quelle,Withdrawn,,,BRACK.CH
+P394,Michael,Carrera,Withdrawn,,,BRACK.CH
+P395,Marcel,Kirchner,Withdrawn,,,Mindfactory (heise mindfactory GmbH)
+P396,Dominik,Gomer,Withdrawn,,,AfB social & green IT
+P397,Adrian-Daniel,Mocanu,Withdrawn,,,AfB social & green IT
+P399,Olaf,Zimmer,Withdrawn,https://www.linkedin.com/in/olaf-zimmer-623070191,,ZOXS (ZOXS GmbH / BuyZOXS)
+P400,Benjamin,Gabriel,Withdrawn,,,mySWOOOP (mySWOOOP GmbH)
+P401,José Jaime Rego,Maseda,Withdrawn,,,mySWOOOP (mySWOOOP GmbH)
+P402,Alexander,Holzknecht,Withdrawn,,,Caseking (Caseking GmbH)
+P403,Izabella,Olszewska,Withdrawn,,,Caseking (Caseking GmbH)
+P425,Monica,Stavarache,Withdrawn,https://www.linkedin.com/in/monica-stavarache-77997a97,"https://www.linkedin.com/sales/lead/ACwAABScWs0BO8327Yu3qzgpsNH5PaEbcKH0mE8,NAME_SEARCH,oijQ",Flip
+P432,Cenk,Kuecuek,Withdrawn,,,Notebook-Pro NPH GmbH
+P441,Merle,Bente,Withdrawn,https://www.linkedin.com/in/merle-bente-56bbb142,,Fixje
+P444,Christian,von Banhans,Withdrawn,,,spusu Deutschland GmbH
+P460,Stefan,van den Berg,Withdrawn,https://www.linkedin.com/in/stefan-van-den-berg-2a830457,,Valyuu B.V.
+P464,Luis,Reig,Withdrawn,https://www.linkedin.com/in/lreig,,Geekmarket
+P468,Victor,de Roos,Withdrawn,https://www.linkedin.com/in/victorderoos,,Valyuu B.V.
+P492,Philippe,Honhon,Withdrawn,https://www.linkedin.com/in/philippe-honhon-44b8074,,Back2Buzz
+P496,Loek,Giessen,Withdrawn,https://www.linkedin.com/in/loekgiessen,,Globe-on
+P501,Stanislaw,Goralczyk,Withdrawn,https://www.linkedin.com/in/stanislaw-goralczyk,,Fixit
+P509,Grzegorz,Kramarczuk,Withdrawn,https://www.linkedin.com/in/grzegorz-kramarczuk-9297723,,Orange Polska SA
+P544,Ralph,Van Lysebeth,Withdrawn,https://www.linkedin.com/in/ralph-van-lysebeth-5251441,,Back2Buzz
+P548,Christian,S.,Withdrawn,,,AfB social & green IT
+P549,Tim,Seewöster,Withdrawn,,,asgoodasnew
+P596,Alon,Hazi,Withdrawn,,https://www.linkedin.com/sales/lead/ACwAAAxes2ABSfFhlW-vAhRCeqFxCpsJOLCRlUs,0815
+P597,Florian,Fleck,Withdrawn,https://www.linkedin.com/in/florian-fleck-5a39b759,https://www.linkedin.com/sales/lead/ACwAAAxtqYsB43Km97tXOyyg6s_IRVYSki7grbw,0815
+P598,Simon,Gabriel,Withdrawn,,"https://www.linkedin.com/sales/lead/ACwAABfnwdIBoECIH3CIRMDQgw81VZ-Mz6mtlNY,NAME_SEARCH,Le2M",mySWOOOP (mySWOOOP GmbH)
+P599,Okan,Uca,Withdrawn,,"https://www.linkedin.com/sales/lead/ACwAADXYAGIBoT9RWuN8F0I0gv58gHXNC7Z7Vx8,NAME_SEARCH,s2vn",mySWOOOP (mySWOOOP GmbH)
+P600,Thorsten,Gebhardt,Withdrawn,,"https://www.linkedin.com/sales/lead/ACwAABqtGqIBw_MkYAKtx-Qtk5uHitboGoggvwI,NAME_SEARCH,NDMk",ZOXS (ZOXS GmbH / BuyZOXS)
+P601,Daniel,Frings,Withdrawn,,"https://www.linkedin.com/sales/lead/ACwAAD7yxysB5eoqZImTmbetlHIPyQ14d1JftWk,NAME_SEARCH,ZDsY",Mindfactory (heise mindfactory GmbH)
+P602,Eileen,Reents,Withdrawn,,"https://www.linkedin.com/sales/lead/ACwAAGFvqysBnNdyqTEvypGVUQ08eAbFWmsZz1o,NAME_SEARCH,7ZPV",Mindfactory (heise mindfactory GmbH)
+P603,Doreen,Schumm,Withdrawn,,"https://www.linkedin.com/sales/lead/ACwAAANuPPwB5apaxxOYB4vve61ka-WwCHdMn_I,NAME_SEARCH,QBEk",Kaufland
+P604,Tenesha,Hutchinson,Withdrawn,,"https://www.linkedin.com/sales/lead/ACwAAAkXY7QBR6Osx2Acsp_8iwC9GjBB8_0dIog,NAME_SEARCH,gS8m",Kaufland
+P605,Fabian,Kothe,Withdrawn,,"https://www.linkedin.com/sales/lead/ACwAAAy7SzgB8Ucx4U1UIdL0uq4Jja_5q3Uxoik,NAME_SEARCH,GIc1",Kaufland
+P606,Michael,Ruf,Withdrawn,,"https://www.linkedin.com/sales/lead/ACwAACtkkWQBUE39tN7AQDujBVs38tkDA4oSxnY,NAME_SEARCH,frBu",1&1 (Drillisch / United Internet)
+P607,Alexander,Wardenga,Withdrawn,https://www.linkedin.com/in/alexander-wardenga-6138aa167,"https://www.linkedin.com/sales/lead/ACwAACfSQO8BBDpNQuZpUkWKOP8o4csdwiP6fRo,NAME_SEARCH,Zn94",1&1 (Drillisch / United Internet)
+P608,Juraj,Matúšek,Withdrawn,,"https://www.linkedin.com/sales/lead/ACwAAAy7NGYBG0vW2Fm8DTr7NI1y_jgML-_ETtk,NAME_SEARCH,lqG0",Alza
+P609,Adam,Hrivnak,Withdrawn,,"https://www.linkedin.com/sales/lead/ACwAAA-XH_UBmdRyc_wtX3y960KcCmx7CPIh2aU,NAME_SEARCH,YgAk",Alza
+P610,Robin,Scheller,Withdrawn,,"https://www.linkedin.com/sales/lead/ACwAACiPB-0B-Mg9YG0YI0hJPZgjqAP39GR3JIQ,NAME_SEARCH,JRkr",Arlt Computer
+P611,Benjamin,Köhler,Withdrawn,,"https://www.linkedin.com/sales/lead/ACwAABdz5LgBClD673ZF6FPmw8Yn-mi8PL3o3M4,NAME_SEARCH,YpQf",Smarando
+P612,Andreas,Gärtner,Withdrawn,,"https://www.linkedin.com/sales/lead/ACwAAC5G2EUBMnElRBoNol_EL3YBhiEddCtO-Zw,NAME_SEARCH,YWhd",Smarando
+P613,Christian,Leschner,Withdrawn,https://www.linkedin.com/in/christian-leschner-6242661b4,"https://www.linkedin.com/sales/lead/ACwAADHfKfwBuKRsmIX3ntVkkc9-iectIr2nq4g,NAME_SEARCH,AmfR",Alternate
+P614,Alexander,Repp,Withdrawn,https://www.linkedin.com/in/alexander-repp-6a004a121,"https://www.linkedin.com/sales/lead/ACwAAB4Vm1gB4Oa-Wqjk1csWl0ShCKnuTKAOYAA,NAME_SEARCH,Rywk",Alternate
+P615,Carsten,Kellmann,Withdrawn,https://www.linkedin.com/in/carstenkellmann,"https://www.linkedin.com/sales/lead/ACwAAAx5GEoBbWZ_CQQs2b-evV-uk_LvyGfFWFU,NAME_SEARCH,i7qE",Alternate
+P616,Christian,Frumlacher,Withdrawn,https://www.linkedin.com/in/christian-frumlacher-b69364119,"https://www.linkedin.com/sales/lead/ACwAAB1rO4EBSx4zYRa85xujukQ4uCrVaRHuxLI,NAME_SEARCH,-LQ1",electronic4you
+P617,Lorenz,Genser,Withdrawn,https://www.linkedin.com/in/lorenz-genser-25a6a3338,"https://www.linkedin.com/sales/lead/ACwAAFTRx6YBw3wf3h0ZJ7hAJBvNhMin558bXPQ,NAME_SEARCH,fumv",electronic4you
+P618,Hannes,Majdic,Withdrawn,https://www.linkedin.com/in/hannes-majdic-76a732a5,"https://www.linkedin.com/sales/lead/ACwAABZa6MIBZLITcy7AIhnQ6vI9EZGyQHuP5pE,NAME_SEARCH,Dti_",electronic4you
+P619,Oscar,Hundman,Withdrawn,https://www.linkedin.com/in/oscar-hundman-4b60a01,https://www.linkedin.com/sales/lead/ACwAAAAwvMoBD513ZEj4UE-l5h5aN5bWVaKxZpQ,bol.com
+P620,Maite,Zubiaurre,Withdrawn,https://www.linkedin.com/in/maitezubiaurre,https://www.linkedin.com/sales/lead/ACwAAAF_D6AB8vi7TXnt0CQovjjlHv51IGdhU00,bol.com
+P621,Rogier,Schuurmans,Withdrawn,https://www.linkedin.com/in/roschuurmans,https://www.linkedin.com/sales/lead/ACwAAAAaQrkBuSZj8Vc3wZvQgWbV-GsikYt0sm0,Forza Refurbished
+P622,Felix,Kügel,Withdrawn,https://www.linkedin.com/in/felix-kügel-ab7769125,"https://www.linkedin.com/sales/lead/ACwAAB7nDOsBP4qwvimIxnqypGzOTzPFIXMg3ec,NAME_SEARCH,Ui33",Conrad Electronic
+P623,Dr. Boris,Ewenstein,Withdrawn,https://www.linkedin.com/in/borisewenstein,"https://www.linkedin.com/sales/lead/ACwAAARc4LwB1C7EVVegZgwDAdS3a-oRnqGiEME,NAME_SEARCH,W9Ja",Otto Group
+P624,Donna,Earnshaw,Withdrawn,https://www.linkedin.com/in/donna-earnshaw-37013126,"https://www.linkedin.com/sales/lead/ACwAAAVbp8QB3cCLmmS2yQVXynSXXQr2JMUcZas,NAME_SEARCH,BGLu",The Very Group
+P625,Edward,Fry,Withdrawn,https://www.linkedin.com/in/edward-fry-057785178,"https://www.linkedin.com/sales/lead/ACwAACod_gMBQU8mrxGFCdHh_Wbgdpd986_3JcA,NAME_SEARCH,tBus",The Very Group
+P626,Sanjeev,Pottay,Withdrawn,https://www.linkedin.com/in/sanjpottay,"https://www.linkedin.com/sales/lead/ACwAAAIlM_wB6byn6OKkClVGmIyIr-cvq6cU8gQ,NAME_SEARCH,f-fQ",The Very Group
+P627,Alicia,Kawczynski,Withdrawn,,,Okamac
+P629,Jo,Fitzpatrick,Withdrawn,,,The Very Group
+P630,Alex,Dickie,Withdrawn,,,Clove Technology
+P633,Tom,Jonkman,Withdrawn,https://www.linkedin.com/in/tom-jonkman,https://www.linkedin.com/sales/lead/ACwAAC1RsRwBjoS04uoek-BF7yAQCHldaC3tm-k,Remarketed
+P709,Charlotte,Pallua,Withdrawn,https://www.linkedin.com/in/pallua/,"https://www.linkedin.com/sales/lead/ACwAAAiXMUMBVqBcr9I6v7CcZF6zDvj4UHPUWjg,NAME_SEARCH,Y8Ds",topi
+CT0001,Christian Timothy,v. Banhans,Not connected,https://www.linkedin.com/in/banhans/,,spusu
+P011,Nuno,Natário,Not connected,https://pt.linkedin.com/in/nuno-natario,,Worten
+P404,Marcus,Trunkenpolz,Not connected,https://www.linkedin.com/in/marcus-trunkenpolz,,Securaze
+P405,Martina,Alessandra Di Fratta,Not connected,,,Nespresso
+P406,Ossi,Kainulainen,Not connected,https://www.linkedin.com/in/ossi-kainulainen,https://www.linkedin.com/sales/lead/ACwAAB09m6kBnI1Zt4-HOm0l5bnDNEJ4K-VThR4,Fixably
+P407,Keith,Wu,Not connected,,,"Zonetail Industrial Co., Ltd."
+P408,Tanja,(Kuhnl) Balazic,Not connected,,,Blancco
+P409,Ivana,Sunaric,Not connected,,,Securaze
+P410,Daniel,Krueger,Not connected,,,eBay
+P411,Chris,Boyd,Not connected,,https://www.linkedin.com/sales/lead/ACwAAAHEFBoBOFnHELcFTqm7uJVvQ50kZ5EdZ5k,Alchemy
+P412,Dirk,Fleischer,Not connected,,,Piceasoft
+P413,Joel,Mansnerus,Not connected,,https://www.linkedin.com/sales/lead/ACwAAAC1qTkBGicOF8Z3kNusvIBHm80Dusrhcpc,Fixably
+P414,Charles,Huang,Not connected,,,APLONG B.V.
+P415,Jeff,Lee,Not connected,,,APLONG B.V.
+P416,Ignacio,Landivar,Not connected,,,AIM Group
+P417,Juha,Niittymaki,Not connected,,,Piceasoft
+P418,Daniel,Chammas,Not connected,,,Blancco
+P419,Jan-Malte,K�ster,Not connected,,,Ingram Micro
+P420,John,Doughty,Not connected,,https://www.linkedin.com/sales/lead/ACwAAAAn7soBtk8ZtqXd2Y4xltbfr54XjUwDTOU,Alchemy
+P421,Rossella,Magliaro,Not connected,,,Phonecheck
+P422,Dennis,Dahrendorff,Not connected,https://www.linkedin.com/in/dennis-dahrendorff,,Securaze
+P423,Michael,Lin,Not connected,,,"Zonetail Industrial Co., Ltd."
+P424,Carly,Scheblo,Not connected,,,GSMA Industry Services
+P426,Simon,Dunn,Not connected,https://www.linkedin.com/in/simondunn1980,,Ingram Micro
+P427,Izzy,Watson,Not connected,,,GSMA Industry Services
+P428,Anja,Krabbe,Not connected,,https://www.linkedin.com/sales/lead/ACwAABIrFDgBR0COx7niBeYGvZGbC726E9Yh4JU,Ingram Micro Lifecycle
+P429,Rui,Du,Not connected,,,APLONG B.V.
+P430,Eirik,Pape Bjorseth,Not connected,,,Summa Equity
+P431,Mike,Geurtz,Not connected,,,iFP Green Technology (Foxconn)
+P433,Gurvinder,Singh,Not connected,,,New Way International Ltd
+P434,Alexander,Amstislavski,Not connected,https://www.linkedin.com/in/alexander-amstislavski,,Firstcom Trading / CarbonPhone
+P435,Simon,Kemoun,Not connected,,,Evy
+P436,Fredrik,Forslund,Not connected,,,Blancco Technology Group
+P437,Markus,Heiss,Not connected,,,Securaze
+P438,Mehmet,Özbuldu,Not connected,,,s2-software GmbH & Co. KG
+P439,Max,Waldmann,Not connected,,,Summa Equity
+P440,Jørgen,Emil Holm-Hansen,Not connected,,,Techsave
+P442,Syed,Fahad Yousuf,Not connected,,,SER Mobile Phones
+P443,Christian,Pangerl,Not connected,,,Ingram Micro
+P445,Marina,von Kriegenbergh,Not connected,,,Reuzado B.V.
+P446,Niklas,Maier,Not connected,,,bb-net media GmbH
+P447,Julien,Maranon,Not connected,,,EcoMicro
+P448,Nicolas,Vallet,Not connected,,,EcoMicro
+P449,Matthias,Masuth,Not connected,,,PHF GmbH
+P450,Frank,Panis,Not connected,https://www.linkedin.com/in/frankpanis,,Harmony Service Center
+P451,David,Hiscott,Not connected,https://www.linkedin.com/in/david-hiscott-98a9696,,iFP Green Technology (Foxconn)
+P452,Malik,Vijahat Ahmad,Not connected,,,ReTech IT
+P453,Matheus,Marcilio,Not connected,https://www.linkedin.com/in/matheus-marcilio,,Refurbed Marketplace GmbH
+P454,James,Sharratt,Not connected,,,the80 Limited
+P455,Kamajit,Singh,Not connected,,,New Way International Ltd
+P456,Gabriel,Gjordumi,Not connected,,,Likewize
+P457,Olivia,Venancio,Not connected,,,Barclays
+P458,James,Heine,Not connected,,https://www.linkedin.com/sales/lead/ACwAAAACYpoBhBZWpz4yyyCkWjuj8pG1O_NvphY,Prolog Mobile
+P459,Leanne,Whittaker,Not connected,,,NIQ
+P461,Moran,Roj Ismaiel,Not connected,,,ReTech IT
+P462,Adrian,Grigoruta,Not connected,,,Refurbished IT
+P463,Ren�,Hergenr�ther,Not connected,,,s2-software GmbH & Co. KG
+P465,Evelyn,Kindsvater,Not connected,https://www.linkedin.com/in/evelyn-k-3092b6232,,Recommerce Group
+P466,Maxence,Debuire,Not connected,,,e-novacorp
+P467,Yuki,Hirano,Not connected,,,Sumitomo Corporation
+P469,Charlotte,Peng,Not connected,,,"Topyet Electronic Co., Ltd."
+P470,Dean,Ray,Not connected,,,the80 Limited
+P471,Ralph,Van Lysebeth,Not connected,,,Back2Buzz
+P472,Alexis,Perrotte,Not connected,,,Bizcom Europe
+P473,Balazs,Kovacs,Not connected,,,Logitech
+P474,Mika,Leijssenaar,Not connected,,,TRIXON BV
+P475,John,Conway,Not connected,,,RenuaTech
+P476,Christian,B�hne,Not connected,,,Danoffice IT
+P477,Anastasiia,Shakh,Not connected,,,The Big Phone Store
+P478,Aaron,Mc Manus,Not connected,,https://www.linkedin.com/sales/lead/ACwAAAHi-fIBgLCvgQ4-sqMyu0jbcDH3Dh5xn74,Telenet
+P479,Frederik,M�ller Hansen,Not connected,,,Danoffice IT
+P480,Hugo,Panissal,Not connected,,,e-novacorp
+P481,Davis,Wilson,Not connected,,,Cosmic Net e.K
+P482,Joost,de Kluijver,Not connected,,,Closing the Loop
+P483,John,Painter,Not connected,,,PCS Wireless
+P484,Mike,MacCready,Not connected,,,Apkudo
+P485,Simon,Harrison,Not connected,,,FutureDial
+P486,Thomas,Obadia,Not connected,https://www.linkedin.com/in/thomas-obadia-a6b94395,,e-novacorp
+P487,Jacob,Ekker,Not connected,https://www.linkedin.com/in/jacobekker,,Closing the Loop
+P488,Sandor,Sannes,Not connected,,,Harmony Service Center B.V.
+P489,Menyh�rt,Kov�cs,Not connected,,,TMX Mobile Solution Szerviz Kft.
+P493,Clara,Poeverlein,Not connected,,,Logitech
+P494,Benedikt,Niebling,Not connected,,,bb-net media GmbH
+P495,Steve,Athwal,Not connected,,https://www.linkedin.com/sales/lead/ACwAAAT_bxoBIDTpLs3xA_7xf0yQHg2UOZpRUBg,The Big Phone Store
+P497,Kevin,Verhoef,Not connected,,,TRIXON BV
+P498,Stephan,Steichele,Not connected,https://www.linkedin.com/in/stephan-steichele-10b4403b1,,ALSO Recommerce AG
+P499,Ana,Maria Jaime Salcedo,Not connected,,,MediaMarkt Saturn
+P500,Linus,Hilmgard,Not connected,,https://www.linkedin.com/sales/lead/ACwAAB6botcBctW6hMy13OloT-ehdpt9z5u609A,Remade in Sweden
+P502,Fredrik,Nilsson,Not connected,,https://www.linkedin.com/sales/lead/ACwAAAqvkIsBt9-C9ClWTmAwRyUONu_OzSMrlKg,Remade in Sweden
+P503,Pawel,Mikolajczyk,Not connected,,https://www.linkedin.com/sales/lead/ACwAACJwqb8BHkeXtnzF4XZmTFpGOj6qtoby0Vs,Fixit
+P504,Khan,Muhammad Osama Shaukat,Not connected,,https://www.linkedin.com/sales/lead/ACwAAAaTtvABWLBTOxnzynPAWlp89Wt78pLkxLI,Swappie
+P505,Andreas,Johnsson,Not connected,,https://www.linkedin.com/sales/lead/ACwAAANGFLwBZOzDw-e2ceqDoFBh6w8jqw0hkOA,Remade in Sweden
+P506,Andrew,Pennycuick,Not connected,,,Grover
+P507,Sameer,Ahmed,Not connected,,,SK World FZCO
+P508,Nicolaus,Baumgartl,Not connected,https://www.linkedin.com/in/nicolaus-baumgartl-356247247,,Foxway
+P510,Anthony,Stansfield,Not connected,,,Tier 1 Asset Management Limited
+P511,Jeannine,Oertel,Not connected,,,KOMSA AG
+P512,Fergal,Donovan,Not connected,,,Cyculus Services GmbH
+P513,Antje,Reuchsel,Not connected,,,KOMSA AG
+P514,Nathan,Rhodes,Not connected,,,WholeCell.io
+P515,Ildar,Raupov,Not connected,,,NSYS Group
+P516,Ed,Chandler,Not connected,,,Tier 1 Asset Management Limited
+P517,Andreas,Bauer,Not connected,,,Cyculus Services GmbH
+P518,Rentaro,Koyama,Not connected,,,Sumitomo Corporation
+P519,Dominik,Wesely,Not connected,,,Mobi Hub Events
+P520,Elias,Khalag,Not connected,,https://www.linkedin.com/sales/lead/ACwAAA9Yr0UBBzFXedCv-5-LTqjG39Om_ls2HHM,Utopya
+P521,Katja,Mulder,Not connected,,,Mobi Hub Events
+P522,Marc,Wohr,Not connected,,,Blancco
+P523,Lewis,Kelly,Not connected,,,Blancco
+P524,Jaime,Dieppa,Not connected,,,KIUD Technologies
+P525,Sam,Nasr,Not connected,,https://www.linkedin.com/sales/lead/ACwAACUKBlEB0DqzQeKHTme00jwZTELBI7N-VdQ,Z Empire Global
+P526,Cristian,David,Not connected,,,Klap
+P527,Robert,Knegt,Not connected,https://www.linkedin.com/in/robert-knegt-203970133,,Just Phone Sales GmbH
+P528,Anders,Thordal,Not connected,,,novitio ApS
+P529,Anders,Jensen,Not connected,,,novitio ApS
+P530,Owen,Fan,Not connected,,,TikTok
+P535,Rodolphe,Mulliez,Not connected,https://www.linkedin.com/in/rodolphe-mulliez-045789137,"https://www.linkedin.com/sales/lead/ACwAACFliPUBCY7hDXVYPKXfQd1_FOox5I2kb-0,NAME_SEARCH,V7H_",Back Market
+P685,Ahmad nawid,Raufi,Not connected,https://www.linkedin.com/in/ahmad-nawid-raufi-b92876351/,"https://www.linkedin.com/sales/lead/ACwAAFffFh4B81g7asXP7YLRGdeTAkTgu9Lk8Hw,NAME_SEARCH,Salu",Mobico
+P690,MediaMonster,Belgium,Not connected,https://www.linkedin.com/in/mediamonster-belgium-573653288/,"https://www.linkedin.com/sales/lead/ACwAAEXc9GcBY5PaMDxdxGmXYqAGyPU42JXYafE,NAME_SEARCH,vIPf",Media-Monster
+P696,Oliver,Lehtsaar,Not connected,https://www.linkedin.com/in/oliver-lehtsaar/,"https://www.linkedin.com/sales/lead/ACwAADP_qcwBcwAuT-Ng9WFNqvrgrU71V_ld_Y0,NAME_SEARCH,rKrW",UPGREAT (UPGR8 OÜ)
+P712,Mathias,Harms,Not connected,https://www.linkedin.com/in/mathias-harms-677023163/,"https://www.linkedin.com/sales/lead/ACwAACb66fsB3T2ZzMYTFxwoZA9jk2cWnO14UyE,NAME_SEARCH,RJNK",Shifter
+P713,Bas,de Vries,Not connected,https://www.linkedin.com/in/basdevries/,"https://www.linkedin.com/sales/lead/ACwAAADZic8BuZe61cwf9M5bMhsTJo_wMETfFMg,NAME_SEARCH,aFXx",Amac
+P714,Roelof,de Rijk,Not connected,https://www.linkedin.com/in/roelofderijk/,"https://www.linkedin.com/sales/lead/ACwAAAFKm34BXZXY0DAYtG7PpFUR2xB2Q0x-nz4,NAME_SEARCH,wS_m",Amac
+P715,Jonah,Koenes,Not connected,https://www.linkedin.com/in/jonah-k-96586464/,"https://www.linkedin.com/sales/lead/ACwAAA2nJl0BP_tWeQvADJpiZYMc_ZowHBhQNQs,NAME_SEARCH,EUHS",Amac
+P717,Max,Greuter,Not connected,https://www.linkedin.com/in/max-greuter-b1278786/,"https://www.linkedin.com/sales/lead/ACwAABJEsX4BJhwuuz8T9rSnhz6QHEJgbKG1kG4,NAME_SEARCH,zvs7",Fust
+P718,Nadine,Krämer,Not connected,https://www.linkedin.com/in/nadine-kr%C3%A4mer-8aa1b65b/,"https://www.linkedin.com/sales/lead/ACwAAAyqZIIBiqWIoYDJLgDGtxzt0M27w-3OyHM,NAME_SEARCH,YJbv",Fust
+P719,Marion,Pfäffli,Not connected,https://www.linkedin.com/in/marion-pf%C3%A4ffli-9375b3151/,"https://www.linkedin.com/sales/lead/ACwAACSS4HsBImE4_bfWno0aVOixZxlRPLV2NSk,NAME_SEARCH,RQB9",Interdiscount
+P721,Julian,Lenhart,Not connected,https://www.linkedin.com/in/julian-lenhart-3ba6aa91/,"https://www.linkedin.com/sales/lead/ACwAABOAh74BYkwjGvAzva3RjxUiJ3eWwB-l8M0,NAME_SEARCH,bf5C",Get-it-easy
+P722,Steffen,Röling,Not connected,https://www.linkedin.com/in/steffen-r%C3%B6ling-a48277115/,"https://www.linkedin.com/sales/lead/ACwAAByxlBgBtWeIAJPHmyfrxto8R0QlJpMQ65Y,NAME_SEARCH,o4t_",Hood.de
+P728,Lars,Purschke,Not connected,https://www.linkedin.com/in/lars-purschke-a70249226,"https://www.linkedin.com/sales/lead/ACwAADih_rQBjJzs4oiS3VOqqDfATkpMQZhD4uo,NAME_SEARCH,hatf",Podia
+P729,Sabrina,Bienger,Not connected,https://www.linkedin.com/in/sabrina-bienger-19809b193,"https://www.linkedin.com/sales/lead/ACwAAC1llEQBImEE5Cn2gCMDj71pB9uddIybgbI,NAME_SEARCH,eGpO",Podia
+P730,Konstantin,Konstantinidis,Not connected,https://www.linkedin.com/in/metrobass,"https://www.linkedin.com/sales/lead/ACwAAAFwC3IBnakAv2FCPbuVB_xBRsca_clwsu0,NAME_SEARCH,VMJz",Podia
+P732,Gert,Schwanter,Not connected,https://www.linkedin.com/in/gert-schwanter-9ba10765,"https://www.linkedin.com/sales/lead/ACwAAA24UN4BNEK-fvSiUcuu5zyhEhFFdjEmN_c,NAME_SEARCH,qRjf",ELBE Miete
+P733,Georg,Santler,Not connected,https://www.linkedin.com/in/georg-santler-362b71112,"https://www.linkedin.com/sales/lead/ACwAABxK47oBHUKK7W9DIAxBQNd-9_M5KnSR8aw,NAME_SEARCH,wzdU",ELBE Miete
+P734,Max,Fleissner,Not connected,https://www.linkedin.com/in/max-fleissner-882b5034a,"https://www.linkedin.com/sales/lead/ACwAAFdg_eIBTmikK_Jhsu0vRDlOhULq40KcmlQ,NAME_SEARCH,CNcn",ELBE Miete
+P739,Sabine,Hiemetzberger,Not connected,https://www.linkedin.com/in/sabine-hiemetzberger-448ba794/,"https://www.linkedin.com/sales/lead/ACwAABQcH7gBbLmVk2CJIGa4o4uKVL_gVK-yG1g,NAME_SEARCH,HFGO",educom
+P740,Siegbert,Franz,Not connected,https://www.linkedin.com/in/siegbertfranz/,"https://www.linkedin.com/sales/lead/ACwAAAKFReYB6QcEG1ufq9RDNLIuXaMGw8laH54,NAME_SEARCH,bAln",xtr-global
+P747,Jeroen,Elkhuizen,Not connected,https://www.linkedin.com/in/jeroen-elkhuizen-0a43707/,"https://www.linkedin.com/sales/lead/ACwAAAFMi3wB7cadnH9IlQFL5UgdisBjljZUMeQ,NAME_SEARCH,Psxe",Belsimpel
+P748,Jeroen,Doorenbos,Not connected,https://www.linkedin.com/in/jeroen-doorenbos-68661a5/,"https://www.linkedin.com/sales/lead/ACwAAAD7MEYBW-uy2tDDJj3X5TdXfogc29s1EvE,NAME_SEARCH,P6r5",Belsimpel
+P749,Tijs,de Vries,Not connected,https://www.linkedin.com/in/tijs-de-vries-a494b5a/,"https://www.linkedin.com/sales/lead/ACwAAAHacpkBpmiCwJXtEVxWgRHp_YdWK2QyBac,NAME_SEARCH,ln31",Belsimpel
+P750,Jesse,Brouwers,Not connected,https://www.linkedin.com/in/jesse-brouwers-74ab3a116/,"https://www.linkedin.com/sales/lead/ACwAAB0AHqoB2V3Ol1qmkQ2IonU88pj4rW2__iw,NAME_SEARCH,wC0u",Belsimpel
+P752,Mario,Horcher,Not connected,https://www.linkedin.com/in/mariohorcher/,"https://www.linkedin.com/sales/lead/ACwAAAINvXsBOUuLRFrjo9aN2uBBZqvbhKICWCg,NAME_SEARCH,rmQA",yourfone
+P753,D.,W.,Not connected,https://www.linkedin.com/in/d-w-a85aa6243/,"https://www.linkedin.com/sales/lead/ACwAADx_AIUB_IfID7yZg1Nh0EQzWnNkmdDawKY,OUT_OF_NETWORK,g3DT",Computeruniverse
+P759,Nick,McBrien,Not connected,https://www.linkedin.com/in/nick-mcbrien-a109a961,"https://www.linkedin.com/sales/lead/ACwAAA0jqGwBEwR2LDR7Md8RtARjpll9VWiAd4E,NAME_SEARCH,6kPD",very
+P760,Daniel,Signer,Not connected,https://www.linkedin.com/in/daniel-signer-81644763,"https://www.linkedin.com/sales/lead/ACwAAA1p19IBU6CaxX3LqewFkcq5yPXgpRAI1GU,NAME_SEARCH,Aqhj",42UW
+P761,Ishnav,Thakooree,Not connected,https://www.linkedin.com/in/ishnav,"https://www.linkedin.com/sales/lead/ACwAADLbPh8Bfc_jbp34Pts8IQ_f-p6yfrToHfs,NAME_SEARCH,0GeN",Dataxis
+P762,Andrii,Kosar,Not connected,https://www.linkedin.com/in/avkosar,"https://www.linkedin.com/sales/lead/ACwAABjodC0BS16c_fdi647RMGbm3dL7UdQnzB8,NAME_SEARCH,K67B",Breezy
+P763,David,Goodley,Not connected,https://www.linkedin.com/in/davidgoodley,"https://www.linkedin.com/sales/lead/ACwAAAONN5cBizyn9Une2KRRODb8KNAk2Hg_wEA,NAME_SEARCH,EUwK",City Compliance
