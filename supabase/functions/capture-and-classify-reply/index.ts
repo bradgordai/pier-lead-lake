@@ -1,4 +1,4 @@
-// Edge Function: capture-and-classify-reply  (v19, F8 2026-09-08; F11.3 inbound replies are terminal)
+// Edge Function: capture-and-classify-reply  (v20, 2026-09-09: F12 T7 confidence + reasoning persisted, elevation gated)
 //
 // Every LinkedIn inbox message reaches this function: from Make "Pier Inbox Watcher"
 // (scenario 9704543, fed by the Inbox Scraper phantom's webhook every 4 hours), from the
@@ -88,6 +88,10 @@ Never invent values. If ambiguous, use "Uncategorised" and confidence < 50. Outp
 const VALID_RC = new Set(["Positive interest", "Neutral", "Objection", "Not interested", "Out of office", "Wrong person", "Do not contact", "Booked meeting", "Uncategorised"]);
 const VALID_OUTCOME = new Set(["Awaiting reply", "Replied / Accepted", "No reply", "Rejected / Bounced", "Withdrawn"]);
 const NO_ELEVATE = new Set(["Do not contact", "Not relevant", "Left company"]);
+// F12 T7: a reply only moves a contact to "In conversation" when the classifier is at least this
+// sure. Below it the reply is still filed and the chase still stops, but the status waits for Oli.
+// 70 = the model's own "confident" band; Uncategorised is capped at 49 so it can never elevate.
+const ELEVATE_MIN_CONFIDENCE = 70;
 
 // ---------------------------------------------------------------- small helpers
 // deno-lint-ignore no-explicit-any
@@ -428,7 +432,7 @@ async function fileInbound(contactId: string, p: Payload, key: string): Promise<
   const touchRowId = inserted.id;
 
   const { cls, genError } = await classify(contact, touchRowId, body, when);
-  await supabase.from("outreach_log").update({ reply_classification: cls.reply_classification, outcome: cls.outcome }).eq("id", touchRowId);
+  await supabase.from("outreach_log").update({ reply_classification: cls.reply_classification, outcome: cls.outcome, reply_confidence: cls.confidence, reply_reasoning: cls.reasoning || null }).eq("id", touchRowId);
 
   // Notes: refresh the AI state of play under the marker.
   if (cls.state_of_play.length) {
@@ -441,8 +445,11 @@ async function fileInbound(contactId: string, p: Payload, key: string): Promise<
   // Chase state: a reply ends the chase (fn_chase_candidates and fn_evaluate_gates both honour this).
   const patch: Record<string, unknown> = { chase_state: "replied", chase_next_due_at: null };
   if ((cls.reply_classification === "Positive interest" || cls.reply_classification === "Booked meeting")
+      && cls.confidence >= ELEVATE_MIN_CONFIDENCE
       && !NO_ELEVATE.has(String(contact.outreach_status)) && contact.outreach_status !== "In conversation") {
     patch.outreach_status = "In conversation";
+  } else if ((cls.reply_classification === "Positive interest" || cls.reply_classification === "Booked meeting") && cls.confidence < ELEVATE_MIN_CONFIDENCE) {
+    console.warn(JSON.stringify({ event: "elevation_withheld_low_confidence", contact_id: contact.id, touch_id: touchRowId, confidence: cls.confidence }));
   }
   await supabase.from("contacts").update(patch).eq("id", contact.id).eq("team_id", PIER_TEAM_ID);
 
