@@ -117,3 +117,47 @@ discover it in the queue.
 
 Shape 5 now works because migration 058/Phase 2 imported the workbook Formality column onto
 `contacts.formality` (359 rows) and the drafter passes it as an explicit register line.
+
+## Standing regression tests (F13.8, added 2026-09-10)
+
+Run after any change to the send path, the callback, the chase engine or a migration that
+touches contacts. Every query must return 0 (test 5: the two numbers must be equal). Team id
+`ef73c15e-4d6f-4159-bcfa-cc76b5ae4972`. Dates are London dates, the same as fn_apply_send_effects.
+
+```sql
+-- 1. No Sent row where touch_date differs from the real send date.
+select count(*) from outreach_log
+ where send_status='Sent' and sent_at_actual is not null
+   and touch_date <> (sent_at_actual at time zone 'Europe/London')::date;
+
+-- 2. No contact messaged in the last 30 days sitting in an UNEARNED chase cooldown
+--    (chase_state 'cooldown' with no sent chaser). An earned rest is chase_state 'exhausted',
+--    or an operator-set Cooldown status with a chaser sent (Lutz Schottenhammer, 2027-08-16).
+select count(*) from contacts
+ where archived_at is null and cooldown_until > current_date
+   and chase_state = 'cooldown' and coalesce(chaser_count,0) = 0
+   and last_contacted >= current_date - 30;
+
+-- 3. No contact with a sent message (not a connection request) still Not started / To contact.
+select count(*) from contacts c
+ where c.archived_at is null and c.outreach_status in ('Not started','To contact')
+   and exists (select 1 from outreach_log o where o.contact_id=c.id and o.send_status='Sent'
+                 and o.touch_type not in ('Reply','Connection request'));
+
+-- 4. No contact claiming chaser_N_sent with zero sent chasers.
+select count(*) from contacts
+ where chase_state in ('chaser_1_sent','chaser_2_sent') and coalesce(chaser_count,0) = 0;
+
+-- 5. Today's send count equals the rows this system dispatched today (phantom_run_id set).
+select (select count(*) from v_sent_touches
+         where sent_on = (now() at time zone 'Europe/London')::date
+           and phantom_run_id is not null) as today_log,
+       (select count(*) from outreach_log
+         where phantom_run_id is not null and send_status='Sent'
+           and (sent_at_actual at time zone 'Europe/London')::date = (now() at time zone 'Europe/London')::date) as today_dispatched;
+```
+
+Baseline 2026-09-10 after F13: 0, 0, 0, 0, 1 = 1. The v_sent_touches count without the
+phantom_run_id filter also includes rows Oli marks sent by hand or the inbox watcher files as his
+own messages; those are real sends too, so the Today tile may legitimately exceed the dispatched
+count on days Oli messages outside the app.
