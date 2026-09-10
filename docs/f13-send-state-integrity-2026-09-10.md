@@ -75,7 +75,10 @@ View v_sent_touches: sent rows keyed on sent_on = London date of sent_at_actual,
 touch_date; security_invoker so RLS applies; owner_user_id exposed for scoping. The app's
 todayActivityLogFn resolves scope through getTaskScope (fn_task_scope) like every other Today
 widget; the three send tiles read their counts from the same rows. Toggle Today / This week,
-remembered per user. Verified in Chrome: see the report for the screenshots.
+remembered per user. Verified in Chrome on the published build (Lovable commit f1b69461): Cold DMs tile 1/15,
+InMails 0/9 (Fischer went yesterday); panel Today = one row, Urs Moeller 12:40; This week + All =
+two rows, Urs Moeller Thu 10 Sept 12:40 and Philipp Fischer Wed 9 Sept 13:57. Owner chip All /
+Oliver / Jack scopes the panel through the same server fn.
 
 ## F13.6 the sends are visible
 Touch popout: Fischer's conversation panel lists 24 Jul 2026 InMail then 9 Sep 2026 InMail Sent;
