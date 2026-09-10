@@ -1,4 +1,4 @@
-// Edge Function: chase-engine  (Batch B B5, reworked for Batch C C1/T2)
+// Edge Function: chase-engine  (Batch B B5, reworked for Batch C C1/T2; F13.4 2026-09-10 chaser_drafted)
 //
 // Daily. Finds contacts due a chaser, evaluates every one through the C5 refusal gates,
 // drafts the survivors via generate-draft-from-context, and advances chase state.
@@ -197,9 +197,10 @@ Deno.serve(async (req) => {
         if (out?.status === "created") {
           drafted++;
           // chaser_count is NOT incremented here: it counts SENT chasers, and this draft has
-          // not been sent or even approved.
+          // not been sent or even approved. F13.4 (2026-09-10): the state says so too:
+          // 'chaser_drafted' here, chaser_N_sent only when fn_apply_send_effects sees the send.
           await supabase.from("contacts").update({
-            chase_state: c.chaser_number === 1 ? "chaser_1_sent" : "chaser_2_sent",
+            chase_state: "chaser_drafted",
             chase_last_outbound_at: c.last_outbound,
             chase_next_due_at: addDays(today, intervalDays),
           }).eq("id", c.contact_id).eq("team_id", PIER_TEAM_ID);

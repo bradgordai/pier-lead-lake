@@ -1,4 +1,4 @@
-// Edge Function: send-approved-callback
+// Edge Function: send-approved-callback  (F13 2026-09-10: calls fn_apply_send_effects on a real send)
 //
 // Terminal state for a send. Called by the Make scenario "Pier Send Callback", which both
 // PhantomBuster phantoms notify on completion. Make forwards:
@@ -196,6 +196,17 @@ Deno.serve(async (req) => {
                 sent_body: confirmedBody })
       .eq("id", row.id).eq("team_id", PIER_TEAM_ID);
     if (uErr) throw uErr;
+    // F13 (2026-09-10): the consequences of a real send live in ONE place, fn_apply_send_effects:
+    // touch_date = the London date it went out (F13.1), chase cooldown cleared + clock restarted
+    // (F13.2), contact moved to Contacted unless further along (F13.3), chaser_N_sent (F13.4).
+    // A failure here is loud but does not undo the Sent mark: the message is out.
+    try {
+      const { data: fx, error: fxErr } = await supabase.rpc("fn_apply_send_effects", { p_outreach_log_id: row.id, p_source: "send-approved-callback" });
+      if (fxErr) console.error(JSON.stringify({ event: "send_effects_failed", id: row.id, message: fxErr.message }));
+      else console.log(JSON.stringify({ event: "send_effects_applied", id: row.id, result: fx }));
+    } catch (e) {
+      console.error(JSON.stringify({ event: "send_effects_failed", id: row.id, message: (e as Error).message ?? String(e) }));
+    }
     await logAudit("send_completed", row.id, `Sent via LinkedIn (${results.length} recipient${results.length === 1 ? "" : "s"}).`, { phantom_run_id: runId, exit_code: 0, results: results.length });
     console.log(JSON.stringify({ event: "send_completed", id: row.id, run_id: runId, results: results.length }));
     return json(200, { status: "send_completed", outreach_log_id: row.id, phantom_run_id: runId, results: results.length });
