@@ -161,3 +161,38 @@ Baseline 2026-09-10 after F13: 0, 0, 0, 0, 1 = 1. The v_sent_touches count witho
 phantom_run_id filter also includes rows Oli marks sent by hand or the inbox watcher files as his
 own messages; those are real sends too, so the Today tile may legitimately exceed the dispatched
 count on days Oli messages outside the app.
+
+## Standing regression tests, F14.8 (added 2026-09-14)
+
+Run beside the F13 five. Every query returns 0 unless stated.
+
+```sql
+-- 6. No automation source silent longer than its threshold (12 h for the three watchers).
+select count(*) from v_automation_health where is_silent;
+
+-- 7. No EXECUTE grant to anon or authenticated on a function that mutates contact or outreach state.
+--    (fn_user_teams, fn_task_scope and the read-only fn_* helpers are exempt by name.)
+select count(*) from information_schema.role_routine_grants
+ where routine_schema='public' and privilege_type='EXECUTE' and grantee in ('anon','authenticated')
+   and routine_name in ('fn_apply_send_effects','fn_heartbeat','fn_set_field_provenance','fn_ledger_inmail_send',
+                        'fn_ledger_inmail_reverse','fn_ledger_inmail_accept_refund','fn_match_contact_by_alias');
+
+-- 8. No Sent row rendering a draft editor. Not a SQL test: open /outreach/<id> for any row with
+--    send_status = 'Sent' and confirm no Approve / Send now / AI edit / Regenerate control renders.
+--    Rows to use: 69f0ae51-3318-4563-a15b-bec63615e9e7 (Fischer), 49f0a880-a210-4d9c-8df2-bffe443d01dd (Moeller).
+
+-- 9. Consent-gate refusal counts unchanged across a build. Snapshot before and after; the four
+--    consent codes must match exactly (only volume codes may move).
+select reason_code, count(*) from refusals
+ where reason_code in ('promise_of_quiet','dnc_or_opted_out','contact_parked','cr_cooldown_active')
+   and created_at >= current_date - 7 group by 1 order by 1;
+
+-- 10. No duplicate outreach_log row on external_key, nor on (contact_id, touch_date, touch_type)
+--     among live rows created after 2026-09-14 (migration-era duplicates are known and listed in the F14 record).
+select (select count(*) from (select external_key from outreach_log where external_key is not null group by 1 having count(*)>1) x)
+     + (select count(*) from (select contact_id, touch_date, touch_type from outreach_log
+                               where created_at >= '2026-09-14' and draft_status <> 'superseded' group by 1,2,3 having count(*)>1) y);
+```
+
+Baseline 2026-09-14 after F14: 0, 0, (visual), promise_of_quiet 2 / dnc_or_opted_out 1 / contact_parked 0 /
+cr_cooldown_active 0, 0.
