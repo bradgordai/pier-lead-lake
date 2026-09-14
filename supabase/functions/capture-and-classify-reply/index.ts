@@ -1,4 +1,4 @@
-// Edge Function: capture-and-classify-reply  (v20, 2026-09-09: F12 T7 confidence + reasoning persisted, elevation gated)
+// Edge Function: capture-and-classify-reply  (v21, 2026-09-14: F14.0 whitespace-normalised dedupe, thread_url stored, heartbeat)
 //
 // Every LinkedIn inbox message reaches this function: from Make "Pier Inbox Watcher"
 // (scenario 9704543, fed by the Inbox Scraper phantom's webhook every 4 hours), from the
@@ -63,6 +63,15 @@ const OLI_USER_ID = "6d282957-f63b-49d6-a4de-5a9a947b4284";
 
 const supabase = createClient(SUPABASE_URL, SERVICE_ROLE_KEY, { auth: { persistSession: false, autoRefreshToken: false } });
 
+// F14.2 (2026-09-14): automation heartbeat. Every authorised, well-formed call stamps
+// automation_heartbeat.inbox_watcher; a handler error stamps a failure. Silence beyond 12 hours raises on Today.
+async function heartbeat(rows: number, ok = true, err?: string): Promise<void> {
+  try {
+    const { error } = await supabase.rpc("fn_heartbeat", { p_source: "inbox_watcher", p_rows: rows, p_ok: ok, p_error: err ?? null });
+    if (error) console.error(JSON.stringify({ event: "heartbeat_failed", source: "inbox_watcher", message: error.message }));
+  } catch (e) { console.error(JSON.stringify({ event: "heartbeat_failed", source: "inbox_watcher", message: (e as Error).message })); }
+}
+
 // deno-lint-ignore no-explicit-any
 const json = (s: number, b: any) => new Response(JSON.stringify(b), { status: s, headers: { "content-type": "application/json" } });
 
@@ -104,6 +113,19 @@ function pick(obj: any, keys: string[]): string {
   return "";
 }
 const norm = (s: string) => String(s ?? "").trim().toLowerCase().replace(/\/+$/, "");
+// F14.0: LinkedIn and our own copy of the same message differ in whitespace (a trailing space
+// before a line break re-filed Urs Moeller's opener). Compare on collapsed whitespace only.
+const normWs = (s: string) => String(s ?? "").replace(/\s+/g, " ").trim().toLowerCase();
+/** True when an existing row on the same day carries the same message text (whitespace-insensitive),
+ *  or the same thread URL with the same full text. */
+// deno-lint-ignore no-explicit-any
+function isSameMessage(row: any, body: string, threadUrl: string): boolean {
+  const existing = String(row?.sent_body ?? row?.reply_content ?? row?.message_body ?? "");
+  const a = normWs(existing), b = normWs(body);
+  if (!a || !b) return false;
+  if (a.slice(0, 40) === b.slice(0, 40)) return true;
+  return !!threadUrl && norm(row?.thread_url ?? "") === norm(threadUrl) && a === b;
+}
 const foldAscii = (s: string) => String(s ?? "").normalize("NFD").replace(/[\u0300-\u036f]/g, "").replace(/ß/g, "ss");
 const normName = (s: string) => foldAscii(s).toLowerCase().replace(/[^a-z0-9 ]+/g, " ").replace(/\s+/g, " ").trim();
 /** The counterparty's name as addressed in the opening line of Oliver's own message. */
@@ -374,11 +396,11 @@ async function fileOwnMessage(contactId: string, p: Payload, key: string): Promi
   const when = messageDateIso(p);
   const day = when.slice(0, 10);
   // A manually logged or migrated touch on the same day with the same opening text is the same message.
-  const { data: same } = await supabase.from("outreach_log").select("id")
-    .eq("team_id", PIER_TEAM_ID).eq("contact_id", contactId).neq("touch_type", "Reply").eq("touch_date", day)
-    .ilike("message_body", `${body.slice(0, 40).replace(/[%_]/g, "")}%`).limit(1).maybeSingle();
+  const { data: sameDay } = await supabase.from("outreach_log").select("id, message_body, sent_body, thread_url")
+    .eq("team_id", PIER_TEAM_ID).eq("contact_id", contactId).neq("touch_type", "Reply").eq("touch_date", day).limit(50);
+  const same = (sameDay ?? []).find((r) => isSameMessage(r, body, p.threadUrl));
   if (same?.id) {
-    await supabase.from("outreach_log").update({ external_key: key }).eq("id", same.id);
+    await supabase.from("outreach_log").update({ external_key: key, thread_url: p.threadUrl || null }).eq("id", same.id);
     return { outcome: "duplicate", touch_id: same.id };
   }
   const { data: contact } = await supabase.from("contacts").select("contact_id, company_id, chase_state, chase_last_outbound_at").eq("id", contactId).maybeSingle();
@@ -389,7 +411,7 @@ async function fileOwnMessage(contactId: string, p: Payload, key: string): Promi
     company_id: contact?.company_id ?? null, channel: "LinkedIn DM", touch_type: (prior ?? 0) > 0 ? "Follow up" : "Initial message",
     message_body: body, sent_body: body, subject_line: null, draft_status: "sent", send_status: "Sent", sent_by: "Oliver",
     sent_at_actual: when, touch_date: day, agent_produced: false, migrated_legacy: false, external_key: key,
-    thread_id: extractUuid(p.threadUrl),
+    thread_id: extractUuid(p.threadUrl), thread_url: p.threadUrl || null,
   }).select("id").single();
   if (error) throw error;
   // Oli answered: the chase restarts from this outbound.
@@ -408,11 +430,11 @@ async function fileInbound(contactId: string, p: Payload, key: string): Promise<
   const day = when.slice(0, 10);
   // Legacy rows (pre-F8) carry no external_key; the same reply on the same day with the same
   // opening text is the same reply.
-  const { data: same } = await supabase.from("outreach_log").select("id")
-    .eq("team_id", PIER_TEAM_ID).eq("contact_id", contactId).eq("touch_type", "Reply").eq("touch_date", day)
-    .ilike("reply_content", `${body.slice(0, 40).replace(/[%_]/g, "")}%`).limit(1).maybeSingle();
+  const { data: sameDay } = await supabase.from("outreach_log").select("id, message_body, reply_content, thread_url")
+    .eq("team_id", PIER_TEAM_ID).eq("contact_id", contactId).eq("touch_type", "Reply").eq("touch_date", day).limit(50);
+  const same = (sameDay ?? []).find((r) => isSameMessage(r, body, p.threadUrl));
   if (same?.id) {
-    await supabase.from("outreach_log").update({ external_key: key }).eq("id", same.id);
+    await supabase.from("outreach_log").update({ external_key: key, thread_url: p.threadUrl || null }).eq("id", same.id);
     return { outcome: "duplicate", touch_id: same.id };
   }
   const { data: contact, error: cErr } = await supabase.from("contacts")
@@ -425,7 +447,7 @@ async function fileInbound(contactId: string, p: Payload, key: string): Promise<
     company_id: contact.company_id ?? null, channel: "LinkedIn DM", touch_type: "Reply", message_body: body, reply_content: body,
     // F11.3: an inbound reply is a fact, not a draft awaiting review. Terminal status, same
     // as every migrated Reply row, so it never inflates the pending-review count.
-    reply_received_at: when, thread_id: extractUuid(p.threadUrl), draft_status: "sent", send_status: "Sent",
+    reply_received_at: when, thread_id: extractUuid(p.threadUrl), thread_url: p.threadUrl || null, draft_status: "sent", send_status: "Sent",
     migrated_legacy: false, agent_produced: false, touch_date: day, external_key: key,
   }).select("id").single();
   if (insErr) throw insErr;
@@ -552,6 +574,7 @@ Deno.serve(async (req) => {
   let body: any;
   try { body = await req.json(); } catch { return json(400, { error: "invalid_json" }); }
   const action = String(body?.action ?? "").trim();
+  await heartbeat(1);
 
   try {
     if (action === "assign") {
@@ -637,6 +660,7 @@ Deno.serve(async (req) => {
     const out = await processPayload(body, counts);
     return json(200, { ...out, counts });
   } catch (e) {
+    await heartbeat(0, false, (e as Error).message ?? String(e));
     console.error(JSON.stringify({ event: "handler_error", action: action || "message", message: (e as Error).message ?? String(e) }));
     return json(500, { error: "internal_error", detail: (e as Error).message ?? "unknown" });
   }
