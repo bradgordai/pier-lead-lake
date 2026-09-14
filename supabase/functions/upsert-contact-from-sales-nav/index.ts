@@ -1,4 +1,4 @@
-// Edge Function: upsert-contact-from-sales-nav  (v-F12, 2026-09-09: two URL fields, degree stored, fail closed)
+// Edge Function: upsert-contact-from-sales-nav  (v-F12 + F14.2 2026-09-14 heartbeat: two URL fields, degree stored, fail closed)
 //
 // Called by Make.com after the Sales Nav "List Export" phantom fires, once per lead.
 // Flow: verify shared secret -> dedupe (canonical linkedin_slug first, then URL) ->
@@ -39,6 +39,15 @@ const ANTHROPIC_MODEL = "claude-sonnet-5";
 const supabase = createClient(SUPABASE_URL, SERVICE_ROLE_KEY, {
   auth: { persistSession: false, autoRefreshToken: false },
 });
+// F14.2 (2026-09-14): automation heartbeat. Every authorised, well-formed call stamps
+// automation_heartbeat.sales_nav_watcher; a handler error stamps a failure. Silence beyond 12 hours raises on Today.
+async function heartbeat(rows: number, ok = true, err?: string): Promise<void> {
+  try {
+    const { error } = await supabase.rpc("fn_heartbeat", { p_source: "sales_nav_watcher", p_rows: rows, p_ok: ok, p_error: err ?? null });
+    if (error) console.error(JSON.stringify({ event: "heartbeat_failed", source: "sales_nav_watcher", message: error.message }));
+  } catch (e) { console.error(JSON.stringify({ event: "heartbeat_failed", source: "sales_nav_watcher", message: (e as Error).message })); }
+}
+
 
 // deno-lint-ignore no-explicit-any
 const json = (status: number, body: any) =>
@@ -206,6 +215,7 @@ Deno.serve(async (req) => {
   // deno-lint-ignore no-explicit-any
   let body: any;
   try { body = await req.json(); } catch { return json(400, { error: "invalid_json" }); }
+  await heartbeat(1);
 
   const profileUrl = String(body?.profileUrl ?? "").trim();
   const firstName = String(body?.firstName ?? "").trim();
@@ -521,6 +531,7 @@ Deno.serve(async (req) => {
       action: "inserted",
     });
   } catch (e) {
+    await heartbeat(0, false, (e as Error).message ?? String(e));
     console.error(JSON.stringify({ event: "handler_error", message: (e as Error).message ?? String(e) }));
     return json(500, { error: "internal_error", detail: (e as Error).message ?? "unknown" });
   }

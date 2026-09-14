@@ -1,4 +1,4 @@
-// Edge Function: update-contact-on-cr-accepted
+// Edge Function: update-contact-on-cr-accepted  (F14.2 2026-09-14: heartbeat)
 //
 // Called by Make.com after the "Recently Connected" phantom fires, once per newly
 // accepted LinkedIn connection. Flow: verify shared secret -> look up the contact
@@ -36,6 +36,15 @@ const PIER_TEAM_ID = Deno.env.get("PIER_TEAM_ID") ?? "";
 const supabase = createClient(SUPABASE_URL, SERVICE_ROLE_KEY, {
   auth: { persistSession: false, autoRefreshToken: false },
 });
+// F14.2 (2026-09-14): automation heartbeat. Every authorised, well-formed call stamps
+// automation_heartbeat.connection_watcher; a handler error stamps a failure. Silence beyond 12 hours raises on Today.
+async function heartbeat(rows: number, ok = true, err?: string): Promise<void> {
+  try {
+    const { error } = await supabase.rpc("fn_heartbeat", { p_source: "connection_watcher", p_rows: rows, p_ok: ok, p_error: err ?? null });
+    if (error) console.error(JSON.stringify({ event: "heartbeat_failed", source: "connection_watcher", message: error.message }));
+  } catch (e) { console.error(JSON.stringify({ event: "heartbeat_failed", source: "connection_watcher", message: (e as Error).message })); }
+}
+
 
 // deno-lint-ignore no-explicit-any
 const json = (status: number, body: any) =>
@@ -61,6 +70,7 @@ Deno.serve(async (req) => {
   // deno-lint-ignore no-explicit-any
   let body: any;
   try { body = await req.json(); } catch { return json(400, { error: "invalid_json" }); }
+  await heartbeat(1);
 
   const profileUrl = String(body?.profileUrl ?? "").trim();
   if (!profileUrl) return json(400, { error: "missing_required_fields", detail: "profileUrl is required" });
@@ -149,6 +159,7 @@ Deno.serve(async (req) => {
       draft,
     });
   } catch (e) {
+    await heartbeat(0, false, (e as Error).message ?? String(e));
     console.error(JSON.stringify({ event: "handler_error", message: (e as Error).message ?? String(e) }));
     return json(500, { error: "internal_error", detail: (e as Error).message ?? "unknown" });
   }
