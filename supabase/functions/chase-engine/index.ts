@@ -1,4 +1,4 @@
-// Edge Function: chase-engine  (Batch B B5, reworked for Batch C C1/T2; F13.4 2026-09-10 chaser_drafted)
+// Edge Function: chase-engine  (Batch B B5, reworked for Batch C C1/T2; F13.4 chaser_drafted; F14.4 2026-09-14 first message after CR behind a flag)
 //
 // Daily. Finds contacts due a chaser, evaluates every one through the C5 refusal gates,
 // drafts the survivors via generate-draft-from-context, and advances chase state.
@@ -75,8 +75,13 @@ Deno.serve(async (req) => {
 
   try {
     const { data: settings } = await supabase.from("team_settings")
-      .select("chase_interval_days, dm_chaser_cap, inmail_chaser_cap, cooldown_days")
+      .select("chase_interval_days, dm_chaser_cap, inmail_chaser_cap, cooldown_days, first_message_after_cr_enabled, first_message_cap_per_run")
       .eq("team_id", PIER_TEAM_ID).maybeSingle();
+    // F14.4: first messages after CR accepted are drafted here ONLY when the team flag is on. A
+    // dry run may ask to preview them with { dry_run: true, include_first_messages: true }; that
+    // writes nothing, so it cannot change behaviour before Brad flips the flag.
+    const firstMsgEnabled = settings?.first_message_after_cr_enabled === true || (dryRun && body?.include_first_messages === true);
+    const firstMsgCap = Math.max(0, Math.min(50, Number(settings?.first_message_cap_per_run ?? 5)));
     const intervalDays = Number(settings?.chase_interval_days ?? 7);
     const dmCap = Number(settings?.dm_chaser_cap ?? 3);
     const inmailCap = Number(settings?.inmail_chaser_cap ?? 1);
@@ -220,6 +225,65 @@ Deno.serve(async (req) => {
       await Promise.all(list.slice(i, i + CONCURRENCY).map(handle));
     }
 
+    // ---------------- 3. first message after CR accepted (flag-gated, F14.4)
+    // Accepted, never messaged, nothing pending. Requested as initial_message (NOT chaser): the
+    // gates run the deep-research and group checks, no chaser cap is touched, and the drafter's
+    // trigger is cr_accepted, the same one the Connection Watcher uses, so the type is
+    // "first message after CR accepted" (layer 4 voice once the draft stack is wired).
+    let firstConsidered = 0, firstDrafted = 0, firstRefused = 0, firstFailed = 0;
+    const firstResults: Array<Record<string, unknown>> = [];
+    if (firstMsgEnabled && firstMsgCap > 0) {
+      const { data: firsts, error: fErr } = await supabase
+        .rpc("fn_first_message_candidates", { p_team_id: PIER_TEAM_ID, p_limit: firstMsgCap });
+      if (fErr) console.error(JSON.stringify({ event: "first_message_candidates_failed", message: fErr.message }));
+      for (const f of (firsts ?? []) as Array<{ contact_id: string; company_id: string | null; priority: string | null }>) {
+        firstConsidered++;
+        const { data: gateRows, error: gErr } = await supabase.rpc("fn_evaluate_gates", {
+          p_team_id: PIER_TEAM_ID, p_contact_id: f.contact_id, p_channel: "LinkedIn DM", p_requested: "initial_message",
+        });
+        if (gErr) { firstFailed++; firstResults.push({ contact_id: f.contact_id, error: gErr.message }); continue; }
+        const gate = (gateRows ?? [])[0];
+        if (gate) {
+          firstRefused++;
+          refusedByCode[gate.reason_code] = (refusedByCode[gate.reason_code] ?? 0) + 1;
+          if (!dryRun) {
+            const since = new Date(today.getTime() - 24 * 3600 * 1000).toISOString();
+            const { data: dup } = await supabase.from("refusals").select("id")
+              .eq("team_id", PIER_TEAM_ID).eq("contact_id", f.contact_id)
+              .eq("reason_code", gate.reason_code).gte("created_at", since).limit(1).maybeSingle();
+            if (!dup) {
+              await supabase.from("refusals").insert({
+                team_id: PIER_TEAM_ID, contact_id: f.contact_id, company_id: f.company_id,
+                reason_code: gate.reason_code, reason_human: gate.reason_human,
+                channel: "LinkedIn DM", requested: "initial_message",
+                context: { ...(gate.context ?? {}), source: "chase-engine", route: "first_message_after_cr" },
+              });
+            }
+          }
+          firstResults.push({ contact_id: f.contact_id, refused: gate.reason_code, route: "first_message_after_cr" });
+          continue;
+        }
+        if (dryRun) {
+          firstDrafted++;
+          firstResults.push({ contact_id: f.contact_id, would_draft: "first_message_after_cr", priority: f.priority });
+          continue;
+        }
+        try {
+          const resp = await fetch(`${SUPABASE_URL}/functions/v1/generate-draft-from-context`, {
+            method: "POST",
+            headers: { authorization: `Bearer ${INTERNAL_SECRET}`, "content-type": "application/json" },
+            body: JSON.stringify({ contact_id: f.contact_id, trigger_reason: "cr_accepted" }),
+          });
+          const out = await resp.json().catch(() => ({}));
+          if (out?.status === "created") { firstDrafted++; firstResults.push({ contact_id: f.contact_id, drafted: "first_message_after_cr", touch_id: out.touch_id }); }
+          else if (out?.refused) { firstRefused++; refusedByCode[out.reason_code] = (refusedByCode[out.reason_code] ?? 0) + 1; firstResults.push({ contact_id: f.contact_id, refused: out.reason_code, via: "drafter" }); }
+          else { firstFailed++; firstResults.push({ contact_id: f.contact_id, error: out?.status ?? out?.error ?? "unknown" }); }
+        } catch (e) {
+          firstFailed++; firstResults.push({ contact_id: f.contact_id, error: (e as Error).message ?? String(e) });
+        }
+      }
+    }
+
     const byRoute: Record<string, number> = {};
     for (const c of list) byRoute[`${c.route} (${c.channel}, cap ${c.cap})`] = (byRoute[`${c.route} (${c.channel}, cap ${c.cap})`] ?? 0) + 1;
 
@@ -234,6 +298,7 @@ Deno.serve(async (req) => {
       drafted, refused, skipped, failed,
       refused_by_reason_code: refusedByCode,
       exhausted_handled: exhaustedHandled,
+      first_message_after_cr: { enabled: firstMsgEnabled, cap_per_run: firstMsgCap, considered: firstConsidered, drafted: firstDrafted, refused: firstRefused, failed: firstFailed, results: firstResults },
       results,
     };
     console.log(JSON.stringify({ event: "chase_engine_run", ...summary, results: undefined }));
