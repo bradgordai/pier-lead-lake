@@ -1,4 +1,4 @@
-// Edge Function: update-contact-on-cr-accepted  (F14.2 2026-09-14: heartbeat)
+// Edge Function: update-contact-on-cr-accepted  (F14.2 2026-09-14: heartbeat; F15.4 2026-09-15: transition-only, drafts the first message immediately per matrix r4)
 //
 // Called by Make.com after the "Recently Connected" phantom fires, once per newly
 // accepted LinkedIn connection. Flow: verify shared secret -> look up the contact
@@ -110,8 +110,17 @@ Deno.serve(async (req) => {
       return json(200, { status: "ignored", reason: "no_sales_nav_source" });
     }
 
-    // Flip to Accepted + stamp last_contacted.
-    const previousStatus = contact.connection_status;
+    // F15.4 (2026-09-15): a repeat report of an acceptance already recorded is not an event. The
+    // phantom reports the same acceptance on every run, so before this the watcher re-stamped
+    // last_contacted daily and re-asked for a draft daily (27 re-stamps on 15 Sep). Nothing is
+    // re-stamped and nothing is re-drafted; the pending draft (if any) already exists.
+    const previousStatus = String(contact.connection_status ?? "");
+    if (previousStatus === "Accepted" || previousStatus === "Already connected") {
+      console.log(JSON.stringify({ event: "ignored", reason: "already_accepted", contact_id: contact.id, previous_status: previousStatus }));
+      return json(200, { status: "ignored", reason: "already_accepted", contact_id: contact.id, previous_status: previousStatus });
+    }
+
+    // Flip to Accepted + stamp last_contacted (the acceptance date).
     const today = new Date().toISOString().slice(0, 10);
     const { error: updErr } = await supabase
       .from("contacts")
