@@ -1,0 +1,7 @@
+-- 105 F16.16 (2026-09-15): the group guard stops a NEW APPROACH into a live deal. A reply is not a new
+-- approach: the prospect has already written to us. fn_evaluate_gates no longer refuses p_requested = 'reply'
+-- on group_sibling_engaged; the drafter (v38) instead puts a visible note on the reply naming the sibling and
+-- the Monday deal so Oliver sees the collision and decides. initial_message, connection_request and chaser
+-- keep the absolute refusal. promise_of_quiet, dnc_or_opted_out, contact_parked and pending_ruling still
+-- refuse replies absolutely. Applied via apply_migration with the full function body; the only change is
+--   IF co.id IS NOT NULL AND p_requested <> 'reply' THEN  (group block)

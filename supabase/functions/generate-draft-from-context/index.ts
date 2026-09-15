@@ -6,6 +6,7 @@ import { callAnthropicWithSentinel, BudgetExceededError } from "./_shared/anthro
 // with a short state-of-play after every draft. v28.
 // F10 (v32): owner signs, SENT-only thread context, created_by.
 // F15.2 (v33, 2026-09-15): routing matrix enforced and asserted for every caller (see ROUTING MATRIX block).
+// F16.16 (v38, 2026-09-15): a reply for a company with an engaged group sibling carries a visible GROUP COLLISION note instead of a refusal.
 // F16.3 (v36, 2026-09-15): a reply drafted for an unresearched company carries a visible note in narrative and guardrails.
 // F15.6/F15.9 (v34-v35, 2026-09-15): voice_assets stack (layers 1-3, layer 4 only for r4/r8) with version stamping;
 // context per type (opener: company+contact; chaser: opener in full + its narrative/guardrails + earlier chasers;
@@ -460,6 +461,16 @@ Deno.serve(async (req) => {
         .eq("id", contact.company_id).maybeSingle();
       company = co ?? null;
     }
+    // F16.16: a reply is never refused on group grounds; the collision is shown instead, naming the sibling and the deal.
+    let groupNote: string | null = null;
+    if (isReplyDraftEarly && contact.company_id) {
+      const { data: sibs } = await supabase.rpc("fn_group_siblings_engaged", { p_team_id: PIER_TEAM_ID, p_company_id: contact.company_id });
+      const names = ((sibs ?? []) as Array<{ company_name: string; why: string }>).map((g) => `${g.company_name} (${g.why})`);
+      if (names.length) {
+        groupNote = `GROUP COLLISION: this company is linked to ${names.join("; ")}. A reply is allowed; check the Monday deal before sending.`;
+        console.warn(JSON.stringify({ event: "reply_with_group_collision", contact_id: contact.id, siblings: names }));
+      }
+    }
     if (isReplyDraftEarly && company && String(company.research_stage ?? "") !== "Deep research done") {
       researchNote = `Company not deep researched (${company.research_stage ?? "no stage"}): this reply was written from the conversation only, not from company knowledge.`;
       console.warn(JSON.stringify({ event: "reply_without_research", contact_id: contact.id, research_stage: company.research_stage ?? null }));
@@ -733,8 +744,8 @@ Deno.serve(async (req) => {
       path, recommended_frame: frame, recommended_arc: arc, touch_date: today,
       // F10.1: sent_by belongs to dispatch. created_by records who asked for the draft.
       sent_by: null, created_by: requestingUser || "agent",
-      draft_narrative: researchNote ? `${researchNote} ${draftNarrative ?? ""}`.trim() : draftNarrative,
-      draft_guardrails: researchNote ? [researchNote, ...draftGuardrails].slice(0, 5) : draftGuardrails,
+      draft_narrative: [groupNote, researchNote, draftNarrative].filter(Boolean).join(" ").trim() || null,
+      draft_guardrails: [groupNote, researchNote, ...draftGuardrails].filter((g): g is string => !!g).slice(0, 6),
       draft_language: draftLanguage, draft_language_reason: draftLanguageReason,
       voice_stack_versions: Object.keys(voiceStackVersions).length ? voiceStackVersions : null,
     };

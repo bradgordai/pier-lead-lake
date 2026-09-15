@@ -1,4 +1,4 @@
-// Edge Function: send-approved-draft
+// Edge Function: send-approved-draft  (v13, F16.15 2026-09-15: fn_evaluate_gates re-run immediately before launch; Opted out / Parked in NO_SEND; dry_run)
 //
 // Pushes ONE approved outreach_log draft out to LinkedIn via PhantomBuster.
 // Called by the Lovable "Send now" button with { outreach_log_id }.
@@ -58,7 +58,9 @@ const CR_WEEKLY_LIMIT = 120;
 const INMAIL_MONTHLY_LIMIT = 150;
 
 // Statuses that must never receive an automated send.
-const NO_SEND = new Set(["Do not contact", "Left company", "Not relevant"]);
+// F16.15 (2026-09-15): 'Opted out' and 'Parked' were missing. This list is a backstop only; the real
+// guard is fn_evaluate_gates, called immediately before launch (below).
+const NO_SEND = new Set(["Do not contact", "Left company", "Not relevant", "Opted out", "Parked"]);
 
 const supabase = createClient(SUPABASE_URL, SERVICE_ROLE_KEY, { auth: { persistSession: false, autoRefreshToken: false } });
 
@@ -102,6 +104,8 @@ Deno.serve(async (req) => {
   try { body = await req.json(); } catch { return json(400, { error: "invalid_json" }); }
   const rowId = String(body?.outreach_log_id ?? "").trim();
   if (!rowId) return json(400, { error: "missing_required_fields", detail: "outreach_log_id required" });
+  // F16.15: dry_run runs every check up to the launch and returns would_launch / the refusal. Nothing is launched.
+  const dryRun = body?.dry_run === true;
 
   try {
     const { data: row, error: rErr } = await supabase.from("outreach_log")
@@ -116,7 +120,7 @@ Deno.serve(async (req) => {
     }
 
     const { data: contact, error: cErr } = await supabase.from("contacts")
-      .select("id, first_name, last_name, linkedin_url, linkedin_sales_nav_url, linkedin_slug, outreach_status")
+      .select("id, first_name, last_name, linkedin_url, linkedin_sales_nav_url, linkedin_slug, outreach_status, company_id")
       .eq("team_id", PIER_TEAM_ID).eq("id", row.contact_id).maybeSingle();
     if (cErr) throw cErr;
     if (!contact) return json(404, { error: "contact_not_found" });
@@ -165,6 +169,37 @@ Deno.serve(async (req) => {
       }
     }
 
+    // F16.15: THE LAST LINE BEFORE A REAL PROSPECT. Every consent gate, the research gate and the group
+    // guard are re-evaluated here, at send time, with the row's real channel and a request type derived
+    // from the touch type. A refusal aborts the launch, is logged to refusals, and is returned in a
+    // shape the Lovable UI can show. Gates ran at draft time too, but a draft can predate a gate or a
+    // status change (Moeller, 10 Sep).
+    const tt = String(row.touch_type ?? "");
+    const requested = tt === "Connection request" ? "connection_request"
+      : tt.startsWith("Chaser ") || tt === "Chase" ? "chaser"
+      : tt === "Follow up" ? "reply"
+      : "initial_message";
+    const { data: gateRows, error: gateErr } = await supabase.rpc("fn_evaluate_gates", {
+      p_team_id: PIER_TEAM_ID, p_contact_id: contact.id, p_channel: channel, p_requested: requested,
+    });
+    if (gateErr) {
+      // Fail closed: if the gate cannot be evaluated, nothing launches.
+      console.error(JSON.stringify({ event: "gate_evaluation_failed", id: rowId, message: gateErr.message, test_mode: TEST_MODE }));
+      return json(500, { error: "gate_evaluation_failed", detail: gateErr.message, test_mode: TEST_MODE });
+    }
+    const gate = (gateRows ?? [])[0];
+    if (gate) {
+      if (!dryRun) {
+        await supabase.from("refusals").insert({
+          team_id: PIER_TEAM_ID, contact_id: contact.id, company_id: contact.company_id ?? null,
+          reason_code: gate.reason_code, reason_human: gate.reason_human, channel, requested,
+          context: { ...(gate.context ?? {}), source: "send-approved-draft", outreach_log_id: rowId, stage: "send" },
+        });
+      }
+      console.warn(JSON.stringify({ event: "send_refused_by_gate", id: rowId, reason_code: gate.reason_code, requested, channel, dry_run: dryRun, test_mode: TEST_MODE }));
+      return json(200, { status: "refused", reason_code: gate.reason_code, reason_human: gate.reason_human, requested, channel, dry_run: dryRun, test_mode: TEST_MODE });
+    }
+
     const messageText = stripHtml(String(row.message_body ?? ""));
     if (!messageText && channel !== "LinkedIn CR") return json(200, { status: "empty_message", test_mode: TEST_MODE });
 
@@ -183,6 +218,10 @@ Deno.serve(async (req) => {
       return json(500, { error: "test_mode_recipient_violation", detail: "TEST_MODE is on and the recipient is not the designated test profile. Aborted without launching." });
     }
     if (!recipientUrl) return json(200, { status: "no_recipient_url", test_mode: TEST_MODE });
+    if (dryRun) {
+      console.log(JSON.stringify({ event: "dry_run_would_launch", id: rowId, channel, requested, test_mode: TEST_MODE }));
+      return json(200, { status: "would_launch", channel, requested, gate: "passed", test_mode: TEST_MODE, dry_run: true });
+    }
 
     if (!PHANTOMBUSTER_API_KEY) {
       console.error(JSON.stringify({ event: "phantombuster_key_missing", test_mode: TEST_MODE }));
