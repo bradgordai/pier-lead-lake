@@ -1,4 +1,4 @@
-// Edge Function: capture-and-classify-reply  (v21, 2026-09-14: F14.0 whitespace-normalised dedupe, thread_url stored, heartbeat)
+// Edge Function: capture-and-classify-reply  (v22, 2026-09-15: F15.5 reply draft on every captured reply; F15.8 uniform In conversation move; v21: F14.0 dedupe, thread_url, heartbeat)
 //
 // Every LinkedIn inbox message reaches this function: from Make "Pier Inbox Watcher"
 // (scenario 9704543, fed by the Inbox Scraper phantom's webhook every 4 hours), from the
@@ -58,6 +58,7 @@ const ANTHROPIC_MODEL = "claude-sonnet-5";
 const PHANTOM_INBOX = "2840951049581867"; // Pier Linkedin Inbox Scraper
 const OLI_LINKEDIN_SLUG = (Deno.env.get("OLI_LINKEDIN_SLUG") ?? "").toLowerCase().trim();
 // Oliver's own anonymised identifier as the phantom reports it. Never learned as a contact alias.
+const OUTBOUND_SECRET = Deno.env.get("INTERNAL_APP_SECRET") || Deno.env.get("MAKE_SHARED_SECRET") || "";
 const OLI_OPAQUE_ID = "acoaach9i3abg4iqwa2sko7j9tefp8s0qlgrfqk";
 const OLI_USER_ID = "6d282957-f63b-49d6-a4de-5a9a947b4284";
 
@@ -96,11 +97,11 @@ Never invent values. If ambiguous, use "Uncategorised" and confidence < 50. Outp
 
 const VALID_RC = new Set(["Positive interest", "Neutral", "Objection", "Not interested", "Out of office", "Wrong person", "Do not contact", "Booked meeting", "Uncategorised"]);
 const VALID_OUTCOME = new Set(["Awaiting reply", "Replied / Accepted", "No reply", "Rejected / Bounced", "Withdrawn"]);
-const NO_ELEVATE = new Set(["Do not contact", "Not relevant", "Left company"]);
-// F12 T7: a reply only moves a contact to "In conversation" when the classifier is at least this
-// sure. Below it the reply is still filed and the chase still stops, but the status waits for Oli.
-// 70 = the model's own "confident" band; Uncategorised is capped at 49 so it can never elevate.
-const ELEVATE_MIN_CONFIDENCE = 70;
+// F15.8: statuses earlier in the funnel than "In conversation". A reply from any of these moves the
+// contact to In conversation regardless of classification. Everything else is left alone: consent
+// statuses are never touched and Meeting booked is never downgraded. (F12 T7's confidence gate is
+// gone: classification drives nothing.)
+const ELEVATE_FROM = new Set(["Not started", "To contact", "Ready", "Active", "Contacted", "Cooldown", "Needs review"]);
 
 // ---------------------------------------------------------------- small helpers
 // deno-lint-ignore no-explicit-any
@@ -465,13 +466,12 @@ async function fileInbound(contactId: string, p: Payload, key: string): Promise<
   }
 
   // Chase state: a reply ends the chase (fn_chase_candidates and fn_evaluate_gates both honour this).
+  // F15.8 (2026-09-15): a reply moves the contact to "In conversation" UNIFORMLY. The classification
+  // is a quiet label and drives nothing. Never a downgrade (Meeting booked stays), never a change to a
+  // consent status (Do not contact, Opted out, Left company, Not relevant, Parked stay as they are).
   const patch: Record<string, unknown> = { chase_state: "replied", chase_next_due_at: null };
-  if ((cls.reply_classification === "Positive interest" || cls.reply_classification === "Booked meeting")
-      && cls.confidence >= ELEVATE_MIN_CONFIDENCE
-      && !NO_ELEVATE.has(String(contact.outreach_status)) && contact.outreach_status !== "In conversation") {
+  if (ELEVATE_FROM.has(String(contact.outreach_status ?? ""))) {
     patch.outreach_status = "In conversation";
-  } else if ((cls.reply_classification === "Positive interest" || cls.reply_classification === "Booked meeting") && cls.confidence < ELEVATE_MIN_CONFIDENCE) {
-    console.warn(JSON.stringify({ event: "elevation_withheld_low_confidence", contact_id: contact.id, touch_id: touchRowId, confidence: cls.confidence }));
   }
   await supabase.from("contacts").update(patch).eq("id", contact.id).eq("team_id", PIER_TEAM_ID);
 
@@ -487,6 +487,25 @@ async function fileInbound(contactId: string, p: Payload, key: string): Promise<
   }
 
   await raiseMoveToMondayAlert(contact.company_id ?? null, touchRowId);
+
+  // F15.5 (2026-09-15): every captured inbound reply produces a pending Reply draft NOW, written from
+  // the whole conversation. The drafter routes it (Follow up, on the inbound channel), runs
+  // fn_evaluate_gates with p_requested='reply' (a refusal is logged there, not here) and dedupes
+  // against an existing pending reply draft. Best effort: the filing above is the primary success.
+  let replyDraft: unknown = null;
+  try {
+    const resp = await fetch(`${SUPABASE_URL}/functions/v1/generate-draft-from-context`, {
+      method: "POST",
+      headers: { authorization: `Bearer ${OUTBOUND_SECRET}`, "content-type": "application/json" },
+      body: JSON.stringify({ contact_id: contact.id, trigger_reason: "follow_up" }),
+    });
+    replyDraft = await resp.json().catch(() => ({ ok: false, http: resp.status }));
+    console.log(JSON.stringify({ event: "reply_draft_triggered", contact_id: contact.id, reply_touch_id: touchRowId, http: resp.status,
+      status: (replyDraft as Record<string, unknown>)?.status ?? null, refused: (replyDraft as Record<string, unknown>)?.reason_code ?? null }));
+  } catch (e) {
+    console.error(JSON.stringify({ event: "reply_draft_trigger_failed", contact_id: contact.id, message: (e as Error).message ?? String(e) }));
+  }
+
   console.log(JSON.stringify({ event: "captured_and_classified", touch_id: touchRowId, contact_id: contact.id, reply_classification: cls.reply_classification, gen_error: genError || undefined }));
   return { outcome: "filed_inbound", touch_id: touchRowId, classification: cls.reply_classification };
 }
