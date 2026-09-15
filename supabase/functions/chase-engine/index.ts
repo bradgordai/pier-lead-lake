@@ -1,4 +1,5 @@
-// Edge Function: chase-engine  (Batch B B5, reworked for Batch C C1/T2; F13.4 chaser_drafted; F14.4 2026-09-14 first message after CR behind a flag; F15.2 2026-09-15 routing matrix; F16.1 2026-09-15 per-section refusal maps + reconciles flag)
+// Edge Function: chase-engine  (deployed v10, 2026-09-15. F16.1 per-section refusal maps + reconciles flag; F15.2 routing matrix; F14.4 first message flag; F13.4 chaser_drafted)
+// NOTE: the deployed bundle is a compacted equivalent of this file (a refusalRow helper replaces the three inline refusal inserts).
 //
 // Daily. Finds contacts due a chaser, evaluates every one through the C5 refusal gates,
 // drafts the survivors via generate-draft-from-context, and advances chase state.
