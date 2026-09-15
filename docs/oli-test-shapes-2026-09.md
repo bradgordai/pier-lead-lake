@@ -196,3 +196,60 @@ select (select count(*) from (select external_key from outreach_log where extern
 
 Baseline 2026-09-14 after F14: 0, 0, (visual), promise_of_quiet 2 / dnc_or_opted_out 1 / contact_parked 0 /
 cr_cooldown_active 0, 0.
+
+## F15 regression set (2026-09-15) — routing matrix, event-driven drafting, replies
+
+Run these beside the F13 and F14 sets. Every query is read-only. All must hold before and after any change to the drafter, the chase engine, the classifier or the candidate functions.
+
+```sql
+-- F15-1 Invariant (a): no pending chaser exists without a real Sent message on that channel. Expect 0.
+select count(*) from outreach_log o join contacts c on c.id=o.contact_id
+ where o.draft_status='pending_review' and o.touch_type::text like 'Chaser %'
+   and not exists (select 1 from outreach_log s where s.contact_id=c.id and s.send_status='Sent'
+                     and s.touch_type::text not in ('Reply','Connection request') and s.channel::text=o.channel::text);
+
+-- F15-2 Invariant (b): no pending LinkedIn DM to a contact who is not connected. Expect 0.
+select count(*) from outreach_log o join contacts c on c.id=o.contact_id
+ where o.draft_status='pending_review' and o.channel::text='LinkedIn DM'
+   and c.connection_status::text not in ('Accepted','Already connected');
+
+-- F15-3 fn_chase_candidates never proposes a chaser without a real message on its channel. Expect 0.
+select count(*) from fn_chase_candidates('ef73c15e-4d6f-4159-bcfa-cc76b5ae4972',5000) f
+ where not exists (select 1 from outreach_log s where s.contact_id=f.contact_id and s.send_status='Sent'
+                     and s.touch_type::text not in ('Reply','Connection request') and s.channel::text=f.channel);
+
+-- F15-4 fn_cold_inmail_candidates never returns a connected contact or one already messaged. Expect 0.
+select count(*) from fn_cold_inmail_candidates('ef73c15e-4d6f-4159-bcfa-cc76b5ae4972',5000) f join contacts c on c.id=f.contact_id
+ where c.connection_status::text in ('Accepted','Already connected')
+    or exists (select 1 from outreach_log s where s.contact_id=c.id and s.send_status='Sent' and s.touch_type::text not in ('Reply','Connection request'));
+
+-- F15-5 chase_state 'replied' is a hard block: no chaser candidate and no pending chaser for a replied contact. Expect 0 / 0.
+select (select count(*) from fn_chase_candidates('ef73c15e-4d6f-4159-bcfa-cc76b5ae4972',5000) f join contacts c on c.id=f.contact_id where c.chase_state='replied'),
+       (select count(*) from outreach_log o join contacts c on c.id=o.contact_id where o.draft_status='pending_review' and o.touch_type::text like 'Chaser %' and c.chase_state='replied');
+
+-- F15-6 A contact under ruling (pending_ruling) is refused on every channel and every request type. Expect every row = pending_ruling.
+select distinct coalesce(g.reason_code,'PASS') from contacts c
+ join refusals r on r.contact_id=c.id and r.reason_code='pending_ruling'
+ cross join lateral (values ('LinkedIn inMail','initial_message'),('LinkedIn DM','chaser'),('Email','reply')) v(ch,req)
+ left join lateral fn_evaluate_gates(c.team_id, c.id, v.ch, v.req) g on true
+ where c.outreach_status::text='Needs review';
+
+-- F15-7 Consent gates unchanged: refusal counts by reason code over the last 7 days, compare before/after.
+select reason_code, count(*) from refusals where created_at > now()-interval '7 days' group by 1 order by 1;
+
+-- F15-8 A reply moves the contact to In conversation: no live (non-migrated) reply on a contact still earlier in the funnel. Expect 0.
+select count(*) from contacts c where c.chase_state='replied'
+   and c.outreach_status::text in ('Not started','To contact','Ready','Active','Contacted');
+
+-- F15-9 Superseded agent drafts and inbox duplicates are never 'Sent'; sent-then-replaced rows stay Sent. Expect 0.
+select count(*) from outreach_log where draft_status='superseded' and send_status='Sent'
+   and (agent_produced or coalesce(rejection_feedback->>'reason','')='duplicate_of_dispatched_row');
+
+-- F15-10 Every agent draft written since v35 carries a voice stack stamp, and layer 4 appears only on
+-- first messages after CR (Initial message / LinkedIn DM) or email replies. Expect 0 for both counts.
+select (select count(*) from outreach_log where agent_produced and created_at > '2026-09-15 06:00+00' and voice_stack_versions is null),
+       (select count(*) from outreach_log where agent_produced and voice_stack_versions ? 'voice_oliver'
+          and not ((touch_type::text='Initial message' and channel::text='LinkedIn DM') or (touch_type::text='Follow up' and channel::text='Email')));
+```
+
+Behavioural checks (dry runs, nothing written): POST generate-draft-from-context with dry_run:true for (i) a Withdrawn contact with a bare CR and trigger chaser_1: expect touch_type Initial message, channel LinkedIn inMail, routing_notes non-empty; (ii) the same contact with trigger cr_accepted: expect channel LinkedIn inMail; (iii) an Accepted contact with a sent DM and trigger chaser_1: expect Chaser 1 on LinkedIn DM, voice_stack_versions without voice_oliver; (iv) an Accepted, never-messaged contact with trigger cr_accepted: expect layer4 = first_message_after_cr. POST chase-engine with dry_run:true: candidates_by_route must show only cr_not_accepted (LinkedIn inMail) and accepted_chase (LinkedIn DM), and cold_inmail_openers.considered <= cold_inmail_openers_per_run.
