@@ -1,0 +1,25 @@
+# F15 (2026-09-15): correct routing, event-driven drafting, replies as conversations, Sales Nav import
+
+Nothing was sent. No phantom was launched. Every change is a migration (095-100) or an edge function redeploy, each committed on its own.
+
+## Landed
+
+| Task | What | Where |
+|---|---|---|
+| F15.1 | 14 Sep Sales Nav export (127) imported: 116 new, 11 merged, 41 refused pending Oliver's ruling (Telefónica 17, Conrad 11, Otto 9, Recommerce AG - verkaufen.ch 2, getgoods.de 1, Swappie 1), 19 company stubs, 1 CR touch seeded (Pennati 11 Aug; the other 7 outreachActivity rows already existed as real touches). New reason code `pending_ruling`; fn_evaluate_gates refuses it on every channel. fn_group_siblings_engaged now counts any archived sibling (newly implicated: Telia Finland/Norge/DK, Medimax). New companies inherit parent_group from a same-name row. | 096 |
+| F15.2 | Routing matrix. fn_chase_candidates clocks a chase off a REAL message on the same channel (the InMail route was clocked off the CR: 107 never-messaged contacts queued as "InMail Chaser 1"). fn_cold_inmail_candidates + team_settings.cold_inmail_openers_per_run (5) for r1. chase-engine v8 runs section 4 (cold openers) and only advances chase_state on a real chaser. Drafter enforces and asserts (a) chaser only after a real message on that channel, (b) DM only to connections, replies on the inbound channel; corrections logged as routing_corrected; violations fail closed (HTTP 500). | 097, chase-engine v8, drafter v33 |
+| F15.3 | Pending queue 59 -> 56: 12 mis-routed drafts superseded, 9 regenerated as cold InMail openers, 3 refused (archived companies). Flag: 5 "Initial message" drafts sit on contacts already messaged on that channel (Wantia, Coen, Stiemert, Mucciolella, Arnoldner). | 098 |
+| F15.4 | Connection Watcher acts only on a real transition to Accepted (it re-stamped last_contacted and re-asked for drafts on every run: 27 re-stamps on 15 Sep). Backfill: 0 new drafts (17 already pending, 10 refused r12). | update-contact-on-cr-accepted v17 |
+| F15.5 | Every captured inbound reply chains a pending Reply draft (drafter follow_up, gates p_requested=reply). DB type stays `Follow up`; the UI labels it Reply. Not applied to the 54 historical replies. The 3 live replies waiting (Thakooree, Koldby, Moeller) are all refused r12: their companies are not deep researched. | classifier v22 |
+| F15.6 | Voice stack cutover done: layers 1-3 from voice_assets, layer 4 (voice_oliver) only for first_message_after_cr and warm_email_reply; versions stamped in outreach_log.voice_stack_versions; EA docs remain the fallback. Context per type: opener = company + contact; chaser = its opener in full + the narrative/guardrails that produced it + earlier chasers however old; reply = whole thread. Findings: a chaser never sees an inbound side because a replied contact never gets a chaser (0 of 20 candidates); opener research context survives on only 1 of 26 sent agent rows (narrative) and 26 of 26 (guardrails), 40 of 56 pending; going forward both persist. | drafter v35 |
+| F15.7 | v_replies_needing_answer (scoped through fn_task_scope, owner or admin; live vs migrated; classification as a quiet label). Live 3, migrated 20. | 099 |
+| F15.8 | Reply moves the contact to In conversation uniformly (from Not started, To contact, Ready, Active, Contacted, Cooldown, Needs review); never a downgrade, consent statuses untouched. Repaired: van Vuurde, Moeller, Stiemert. Köhler (Cooldown, replied 11 Aug, migrated, cooldown_until null): recommend In conversation by hand after reading the thread. 7 In conversation without chase_state replied left as found. | classifier v22, 099 |
+| F15.9 | Superseded agent drafts and inbox duplicates are Cancelled (Urs twin fixed); 099 over-reached onto 137 sent-then-replaced rows, 100 restored them. Regenerate throttled to one per two minutes (Dupuis had 5 in 4 min). Reply label bug and history filter handed to Lovable. | 099, 100, drafter v35, Lovable |
+| F15.10 | Ten regression tests appended to docs/oli-test-shapes-2026-09.md; all pass. | docs |
+
+## Open for Brad / Oliver
+- Rulings: the 41 refused contacts stay at Needs review until a human moves them; Recommerce AG - verkaufen.ch vs archived Recommerce Group; Telefónica C185 vs Telefonica C889 duplicate rows.
+- Tomorrow's 06:15 cron would add 4 InMail Chaser 1, 3 DM Chaser 3 and 5 cold InMail openers. Set cold_inmail_openers_per_run to 0 to hold the openers.
+- 13 Accepted contacts received an InMail but never a DM (Ide, Verdirk, Halpin, Capaldo, Schwager, Harrison-North, McBrien, Schmid, Rosenblum, Reif, Friedrich, Ptasiński, Negwer): under r4 they need a DM first message; no longer chaser candidates.
+- Reply drafts for Urs Moeller, Koldby and Thakooree are blocked by r12 until coolblue, Zalomi-style companies are deep researched.
+- Data quality (not fixed): Laukenmann blank title/company; "DBC ELECTRONICS" imported as a contact + stub C1366; 4 leading-space company names; Ali Sayadi Out of Network; the 45 P0 contacts remain on the P0 list.
