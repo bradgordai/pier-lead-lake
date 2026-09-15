@@ -5,6 +5,7 @@ import { callAnthropicWithSentinel, BudgetExceededError } from "./_shared/anthro
 // notes; note dates matter), and the AI section of contacts.conversation_summary is refreshed
 // with a short state-of-play after every draft. v28.
 // F10 (v32): owner signs, SENT-only thread context, created_by.
+// F15.2 (v33, 2026-09-15): routing matrix enforced and asserted for every caller (see ROUTING MATRIX block).
 // F9.5/F9.6 (v29-v31): explicit target-language resolution (prior thread > contact Language > market
 // default), draft_language recorded from the generated body, sign-off enforced.
 import { contactNotesBlock, mergeAiStateOfPlay } from "./_shared/conversation-summary.ts";
@@ -271,12 +272,10 @@ Deno.serve(async (req) => {
   const isManual = triggerReason === "manual_regenerate";
   let effectiveTrigger = isManual ? (byTouchType ?? "") : triggerReason;
   const mapped = { ...(TRIGGER_MAP[effectiveTrigger] ?? TRIGGER_MAP["cr_accepted"]) };
-  if (exitShape) {
-    mapped.intent = "FINAL touch on this route. This is the last message that will be sent, "
+  const EXIT_INTENT = "FINAL touch on this route. This is the last message that will be sent, "
       + "so it must leave the door open and make no ask: no question, no meeting request, no "
       + "call to action of any kind. Brief and gracious. Say plainly that you will leave it "
       + "with them, and make it easy for them to come back later on their own terms.";
-  }
 
   try {
     const { data: contact, error: cErr } = await supabase.from("contacts")
@@ -309,10 +308,67 @@ Deno.serve(async (req) => {
     //
     // C1: an accepted contact is chased over FREE LinkedIn DM. Resolved before the gate
     // call because the per-channel allowance depends on which channel we would actually use.
+    // F15.2 (2026-09-15) ROUTING MATRIX, enforced here for EVERY caller (chase engine, Connection
+    // Watcher, reply classifier, the Lovable Generate/Regenerate buttons). Two invariants:
+    //   (a) a chaser exists only when a REAL message (not a connection request) was Sent on that
+    //       same channel; otherwise this is an Initial message on that channel.
+    //   (b) the channel follows connection state: DM only to Accepted / Already connected,
+    //       InMail to everyone else (r13: a non-connection never gets a DM).
+    //   (r7/r8) a reply goes back on the channel the inbound reply arrived on.
+    // Whatever the caller asked for is corrected, logged as routing_corrected, and asserted below.
+    const connected = ["Accepted", "Already connected"].includes(String(contact.connection_status ?? ""));
+    const { data: sentRows } = await supabase.from("outreach_log").select("channel, touch_type, touch_date")
+      .eq("team_id", PIER_TEAM_ID).eq("contact_id", contact.id).eq("send_status", "Sent")
+      .not("touch_type", "in", '("Reply","Connection request")');
+    const realOn = (ch: string) => (sentRows ?? []).some((r) => String(r.channel) === ch);
+    const chasersOn = (ch: string) => (sentRows ?? []).filter((r) => String(r.channel) === ch && String(r.touch_type).startsWith("Chaser ")).length;
+    const { data: lastReply } = await supabase.from("outreach_log").select("channel")
+      .eq("team_id", PIER_TEAM_ID).eq("contact_id", contact.id).eq("touch_type", "Reply")
+      .order("touch_date", { ascending: false }).limit(1).maybeSingle();
+    const routingBefore = { trigger: effectiveTrigger, channel: mapped.channel, touch_type: mapped.touch_type };
+    const routingNotes: string[] = [];
+    const stateChannel = connected ? "LinkedIn DM" : "LinkedIn inMail";
+    const setTrigger = (t: string, note: string) => { effectiveTrigger = t; Object.assign(mapped, TRIGGER_MAP[t]); routingNotes.push(note); };
+    if (effectiveTrigger === "follow_up") {
+      const rc = String(lastReply?.channel ?? "");
+      const replyChannel = ["Email", "LinkedIn inMail", "LinkedIn DM"].includes(rc) ? rc : stateChannel;
+      if (mapped.channel !== replyChannel) routingNotes.push(`reply answered on the inbound channel ${replyChannel}`);
+      mapped.channel = replyChannel;
+    } else {
+      if (effectiveTrigger.startsWith("chaser_")) {
+        if (!realOn(stateChannel)) {
+          setTrigger(connected ? "cr_accepted" : "inmail_cold", `(a) no real message ever sent on ${stateChannel}: chaser demoted to Initial message`);
+        } else {
+          const n = Math.min(chasersOn(stateChannel) + 1, 3);
+          if (`chaser_${n}` !== effectiveTrigger) setTrigger(`chaser_${n}`, `chaser number follows sent chasers on ${stateChannel} (${n})`);
+        }
+      } else if (effectiveTrigger === "cr_accepted" && !connected) {
+        setTrigger("inmail_cold", "(b)/r13 not connected: DM opener rerouted to cold InMail");
+      } else if (effectiveTrigger === "inmail_cold" && connected) {
+        setTrigger("cr_accepted", "(b) connected: cold InMail rerouted to the DM first message");
+      }
+      if ((effectiveTrigger === "cr_accepted" || effectiveTrigger === "inmail_cold") && realOn(stateChannel) && String(contact.chase_state ?? "") !== "replied") {
+        const n = Math.min(chasersOn(stateChannel) + 1, 3);
+        setTrigger(`chaser_${n}`, `(a) a real message already went out on ${stateChannel}: opener promoted to Chaser ${n}`);
+      }
+      mapped.channel = stateChannel;
+    }
     const isChaser = effectiveTrigger.startsWith("chaser_");
-    const chaserChannel = String(contact.connection_status ?? "") === "Accepted"
-      ? "LinkedIn DM" : "LinkedIn inMail";
-    if (isChaser) mapped.channel = chaserChannel;
+    // exit_shape only ever applies to a chaser (the last one permitted on the route); an opener is never exit-shaped.
+    if (exitShape && isChaser) mapped.intent = EXIT_INTENT;
+    if (routingNotes.length) {
+      console.log(JSON.stringify({ event: "routing_corrected", contact_id: contact.id, trigger_reason: triggerReason, before: routingBefore,
+        after: { trigger: effectiveTrigger, channel: mapped.channel, touch_type: mapped.touch_type }, notes: routingNotes }));
+    }
+    // Hard assertions: fail closed. Nothing below may run with a DM to a non-connection or a chaser with no thread.
+    if (mapped.channel === "LinkedIn DM" && !connected) {
+      console.error(JSON.stringify({ event: "routing_invariant_violated", contact_id: contact.id, rule: "b", channel: mapped.channel, connection_status: contact.connection_status }));
+      return json(500, { error: "routing_invariant_violated", rule: "b", detail: "LinkedIn DM to a contact who is not connected" });
+    }
+    if (isChaser && !realOn(mapped.channel)) {
+      console.error(JSON.stringify({ event: "routing_invariant_violated", contact_id: contact.id, rule: "a", channel: mapped.channel }));
+      return json(500, { error: "routing_invariant_violated", rule: "a", detail: "chaser with no real message sent on that channel" });
+    }
 
     const requested = effectiveTrigger === "follow_up" ? "reply"
                     : isChaser ? "chaser"
@@ -589,7 +645,7 @@ Deno.serve(async (req) => {
     // test drafts in Pending Review for Oli to clean up.
     if (dryRun) {
       console.log(JSON.stringify({ event: "draft_dry_run", contact_id: contact.id, usage, estimated_cost_gbp: costGbp }));
-      return json(200, { status: "dry_run", contact_id: contact.id, sender, usage, estimated_cost_gbp: costGbp, narrative: draftNarrative, guardrails: draftGuardrails, message_preview: messageBody.slice(0, 300), message: messageBody, lint_score: lint.score, draft_language: draftLanguage, draft_language_reason: draftLanguageReason, sign_off_appended: signOffAppended, touch_type: mapped.touch_type, effective_trigger: effectiveTrigger, thread_context: threadText.slice(0, 600) });
+      return json(200, { status: "dry_run", contact_id: contact.id, sender, usage, estimated_cost_gbp: costGbp, narrative: draftNarrative, guardrails: draftGuardrails, message_preview: messageBody.slice(0, 300), message: messageBody, lint_score: lint.score, draft_language: draftLanguage, draft_language_reason: draftLanguageReason, sign_off_appended: signOffAppended, touch_type: mapped.touch_type, channel: mapped.channel, effective_trigger: effectiveTrigger, routing_notes: routingNotes, thread_context: threadText.slice(0, 600) });
     }
 
     const today = new Date().toISOString().slice(0, 10);
@@ -621,7 +677,7 @@ Deno.serve(async (req) => {
     }
 
     console.log(JSON.stringify({ event: "draft_created", touch_id: inserted.id, contact_id: contact.id, sender, lint_score: lint.score, pass: lint.pass, generation_failed: generationFailed }));
-    return json(200, { status: generationFailed ? "generation_failed" : "created", touch_id: inserted.id, sender, draft_language: draftLanguage, draft_language_reason: draftLanguageReason, sign_off_appended: signOffAppended, touch_type: mapped.touch_type, message_preview: messageBody.slice(0, 200), narrative: draftNarrative, guardrails: draftGuardrails, usage, estimated_cost_gbp: costGbp, pre_lint_pass: lint.pass, lint_score: lint.score, path, frame, gen_error: genError || undefined });
+    return json(200, { status: generationFailed ? "generation_failed" : "created", touch_id: inserted.id, sender, draft_language: draftLanguage, draft_language_reason: draftLanguageReason, sign_off_appended: signOffAppended, touch_type: mapped.touch_type, channel: mapped.channel, effective_trigger: effectiveTrigger, routing_notes: routingNotes, message_preview: messageBody.slice(0, 200), narrative: draftNarrative, guardrails: draftGuardrails, usage, estimated_cost_gbp: costGbp, pre_lint_pass: lint.pass, lint_score: lint.score, path, frame, gen_error: genError || undefined });
   } catch (e) {
     console.error(JSON.stringify({ event: "handler_error", message: (e as Error).message ?? String(e) }));
     return json(500, { error: "internal_error", detail: (e as Error).message ?? "unknown" });

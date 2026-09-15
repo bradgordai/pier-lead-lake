@@ -1,4 +1,4 @@
-// Edge Function: chase-engine  (Batch B B5, reworked for Batch C C1/T2; F13.4 chaser_drafted; F14.4 2026-09-14 first message after CR behind a flag)
+// Edge Function: chase-engine  (Batch B B5, reworked for Batch C C1/T2; F13.4 chaser_drafted; F14.4 2026-09-14 first message after CR behind a flag; F15.2 2026-09-15 routing matrix: chasers only after a real message on the same channel, r1 cold InMail openers under cold_inmail_openers_per_run)
 //
 // Daily. Finds contacts due a chaser, evaluates every one through the C5 refusal gates,
 // drafts the survivors via generate-draft-from-context, and advances chase state.
@@ -75,13 +75,16 @@ Deno.serve(async (req) => {
 
   try {
     const { data: settings } = await supabase.from("team_settings")
-      .select("chase_interval_days, dm_chaser_cap, inmail_chaser_cap, cooldown_days, first_message_after_cr_enabled, first_message_cap_per_run")
+      .select("chase_interval_days, dm_chaser_cap, inmail_chaser_cap, cooldown_days, first_message_after_cr_enabled, first_message_cap_per_run, cold_inmail_openers_per_run")
       .eq("team_id", PIER_TEAM_ID).maybeSingle();
     // F14.4: first messages after CR accepted are drafted here ONLY when the team flag is on. A
     // dry run may ask to preview them with { dry_run: true, include_first_messages: true }; that
     // writes nothing, so it cannot change behaviour before Brad flips the flag.
     const firstMsgEnabled = settings?.first_message_after_cr_enabled === true || (dryRun && body?.include_first_messages === true);
     const firstMsgCap = Math.max(0, Math.min(50, Number(settings?.first_message_cap_per_run ?? 5)));
+    // F15.2: r1 cold InMail openers (not connected, never messaged) are drafted here under their own
+    // per-run cap; 0 switches them off. They are openers, never chasers, and never DMs.
+    const coldCap = Math.max(0, Math.min(50, Number(settings?.cold_inmail_openers_per_run ?? 5)));
     const intervalDays = Number(settings?.chase_interval_days ?? 7);
     const dmCap = Number(settings?.dm_chaser_cap ?? 3);
     const inmailCap = Number(settings?.inmail_chaser_cap ?? 1);
@@ -204,12 +207,19 @@ Deno.serve(async (req) => {
           // chaser_count is NOT incremented here: it counts SENT chasers, and this draft has
           // not been sent or even approved. F13.4 (2026-09-10): the state says so too:
           // 'chaser_drafted' here, chaser_N_sent only when fn_apply_send_effects sees the send.
-          await supabase.from("contacts").update({
-            chase_state: "chaser_drafted",
-            chase_last_outbound_at: c.last_outbound,
-            chase_next_due_at: addDays(today, intervalDays),
-          }).eq("id", c.contact_id).eq("team_id", PIER_TEAM_ID);
-          results.push({ contact_id: c.contact_id, drafted: trigger, touch_id: out.touch_id,
+          // F15.2: the drafter enforces the routing matrix and may have demoted the request to an
+          // Initial message; only a real chaser draft moves the chase state.
+          const producedChaser = String(out?.touch_type ?? "").startsWith("Chaser ");
+          if (producedChaser) {
+            await supabase.from("contacts").update({
+              chase_state: "chaser_drafted",
+              chase_last_outbound_at: c.last_outbound,
+              chase_next_due_at: addDays(today, intervalDays),
+            }).eq("id", c.contact_id).eq("team_id", PIER_TEAM_ID);
+          } else {
+            console.error(JSON.stringify({ event: "routing_mismatch", contact_id: c.contact_id, asked: trigger, produced: out?.touch_type }));
+          }
+          results.push({ contact_id: c.contact_id, drafted: trigger, produced: out?.touch_type, touch_id: out.touch_id,
                          route: c.route, channel: c.channel, is_final: c.is_final });
         } else {
           skipped++;
@@ -284,6 +294,63 @@ Deno.serve(async (req) => {
       }
     }
 
+    // ---------------- 4. r1 cold InMail openers (F15.2). Not connected, never messaged on any
+    // channel, company deep-researched, CR (if any) older than the chase interval. Requested as
+    // initial_message on LinkedIn inMail; the drafter's trigger is inmail_cold. Capped per run.
+    let coldConsidered = 0, coldDrafted = 0, coldRefused = 0, coldFailed = 0;
+    const coldResults: Array<Record<string, unknown>> = [];
+    let coldBacklog = 0;
+    if (coldCap > 0) {
+      const { data: coldAll } = await supabase.rpc("fn_cold_inmail_candidates", { p_team_id: PIER_TEAM_ID, p_limit: 5000 });
+      coldBacklog = ((coldAll ?? []) as unknown[]).length;
+      const { data: colds, error: kErr } = await supabase
+        .rpc("fn_cold_inmail_candidates", { p_team_id: PIER_TEAM_ID, p_limit: coldCap });
+      if (kErr) console.error(JSON.stringify({ event: "cold_inmail_candidates_failed", message: kErr.message }));
+      for (const k of (colds ?? []) as Array<{ contact_id: string; company_id: string | null; priority: string | null; connection_status: string | null }>) {
+        coldConsidered++;
+        if (["Accepted", "Already connected"].includes(String(k.connection_status ?? ""))) { coldFailed++; coldResults.push({ contact_id: k.contact_id, error: "routing_invariant_violated: connected contact in cold InMail set" }); continue; }
+        const { data: gateRows, error: gErr } = await supabase.rpc("fn_evaluate_gates", {
+          p_team_id: PIER_TEAM_ID, p_contact_id: k.contact_id, p_channel: "LinkedIn inMail", p_requested: "initial_message",
+        });
+        if (gErr) { coldFailed++; coldResults.push({ contact_id: k.contact_id, error: gErr.message }); continue; }
+        const gate = (gateRows ?? [])[0];
+        if (gate) {
+          coldRefused++;
+          refusedByCode[gate.reason_code] = (refusedByCode[gate.reason_code] ?? 0) + 1;
+          if (!dryRun) {
+            const since = new Date(today.getTime() - 24 * 3600 * 1000).toISOString();
+            const { data: dup } = await supabase.from("refusals").select("id")
+              .eq("team_id", PIER_TEAM_ID).eq("contact_id", k.contact_id)
+              .eq("reason_code", gate.reason_code).gte("created_at", since).limit(1).maybeSingle();
+            if (!dup) {
+              await supabase.from("refusals").insert({
+                team_id: PIER_TEAM_ID, contact_id: k.contact_id, company_id: k.company_id,
+                reason_code: gate.reason_code, reason_human: gate.reason_human,
+                channel: "LinkedIn inMail", requested: "initial_message",
+                context: { ...(gate.context ?? {}), source: "chase-engine", route: "cold_inmail_open" },
+              });
+            }
+          }
+          coldResults.push({ contact_id: k.contact_id, refused: gate.reason_code, route: "cold_inmail_open" });
+          continue;
+        }
+        if (dryRun) { coldDrafted++; coldResults.push({ contact_id: k.contact_id, would_draft: "inmail_cold", priority: k.priority }); continue; }
+        try {
+          const resp = await fetch(`${SUPABASE_URL}/functions/v1/generate-draft-from-context`, {
+            method: "POST",
+            headers: { authorization: `Bearer ${INTERNAL_SECRET}`, "content-type": "application/json" },
+            body: JSON.stringify({ contact_id: k.contact_id, trigger_reason: "inmail_cold" }),
+          });
+          const out = await resp.json().catch(() => ({}));
+          if (out?.status === "created") { coldDrafted++; coldResults.push({ contact_id: k.contact_id, drafted: "inmail_cold", produced: out?.touch_type, touch_id: out.touch_id }); }
+          else if (out?.refused) { coldRefused++; refusedByCode[out.reason_code] = (refusedByCode[out.reason_code] ?? 0) + 1; coldResults.push({ contact_id: k.contact_id, refused: out.reason_code, via: "drafter" }); }
+          else { coldFailed++; coldResults.push({ contact_id: k.contact_id, error: out?.status ?? out?.error ?? "unknown" }); }
+        } catch (e) {
+          coldFailed++; coldResults.push({ contact_id: k.contact_id, error: (e as Error).message ?? String(e) });
+        }
+      }
+    }
+
     const byRoute: Record<string, number> = {};
     for (const c of list) byRoute[`${c.route} (${c.channel}, cap ${c.cap})`] = (byRoute[`${c.route} (${c.channel}, cap ${c.cap})`] ?? 0) + 1;
 
@@ -298,6 +365,7 @@ Deno.serve(async (req) => {
       drafted, refused, skipped, failed,
       refused_by_reason_code: refusedByCode,
       exhausted_handled: exhaustedHandled,
+      cold_inmail_openers: { cap_per_run: coldCap, backlog: coldBacklog, considered: coldConsidered, drafted: coldDrafted, refused: coldRefused, failed: coldFailed, results: coldResults },
       first_message_after_cr: { enabled: firstMsgEnabled, cap_per_run: firstMsgCap, considered: firstConsidered, drafted: firstDrafted, refused: firstRefused, failed: firstFailed, results: firstResults },
       results,
     };
