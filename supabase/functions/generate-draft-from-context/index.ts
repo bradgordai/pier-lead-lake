@@ -6,6 +6,9 @@ import { callAnthropicWithSentinel, BudgetExceededError } from "./_shared/anthro
 // with a short state-of-play after every draft. v28.
 // F10 (v32): owner signs, SENT-only thread context, created_by.
 // F15.2 (v33, 2026-09-15): routing matrix enforced and asserted for every caller (see ROUTING MATRIX block).
+// F15.6/F15.9 (v34-v35, 2026-09-15): voice_assets stack (layers 1-3, layer 4 only for r4/r8) with version stamping;
+// context per type (opener: company+contact; chaser: opener in full + its narrative/guardrails + earlier chasers;
+// reply: whole thread); replies answered on the inbound channel; regenerate throttled to one per two minutes.
 // F9.5/F9.6 (v29-v31): explicit target-language resolution (prior thread > contact Language > market
 // default), draft_language recorded from the generated body, sign-off enforced.
 import { contactNotesBlock, mergeAiStateOfPlay } from "./_shared/conversation-summary.ts";
@@ -331,7 +334,10 @@ Deno.serve(async (req) => {
     const setTrigger = (t: string, note: string) => { effectiveTrigger = t; Object.assign(mapped, TRIGGER_MAP[t]); routingNotes.push(note); };
     if (effectiveTrigger === "follow_up") {
       const rc = String(lastReply?.channel ?? "");
-      const replyChannel = ["Email", "LinkedIn inMail", "LinkedIn DM"].includes(rc) ? rc : stateChannel;
+      // r7/r8: email replies are answered by email; a LinkedIn reply is answered on the channel the
+      // connection state allows (the inbox watcher files every LinkedIn reply as DM, but a
+      // non-connection's thread is an InMail thread, and a DM to a non-connection is never legal).
+      const replyChannel = rc === "Email" ? "Email" : stateChannel;
       if (mapped.channel !== replyChannel) routingNotes.push(`reply answered on the inbound channel ${replyChannel}`);
       mapped.channel = replyChannel;
     } else {
@@ -424,6 +430,15 @@ Deno.serve(async (req) => {
       .limit(1)
       .maybeSingle();
     if (existingDraft && !dryRun && isManual) {
+      // F15.9 (3): repeat guard. Bertrand Dupuis got five Chaser 1 regenerates in four minutes on 9 Sep,
+      // each superseding the last. A regenerate within two minutes of the previous one is refused, not
+      // queued; the button must wait for the last result.
+      const ageMs = Date.now() - new Date(String(existingDraft.created_at ?? 0)).getTime();
+      if (Number.isFinite(ageMs) && ageMs < 120_000) {
+        console.warn(JSON.stringify({ event: "regenerate_throttled", contact_id: contact.id, existing_touch_id: existingDraft.id, age_seconds: Math.round(ageMs / 1000) }));
+        return json(200, { status: "regenerate_throttled", existing_touch_id: existingDraft.id, retry_after_seconds: Math.ceil((120_000 - ageMs) / 1000),
+          message: "This draft was regenerated less than two minutes ago. Read it first; regenerate again after two minutes if it still is not right." });
+      }
       // Regenerate means replace: the old agent draft is superseded, never silently kept.
       await supabase.from("outreach_log").update({ draft_status: "superseded", rejection_feedback: { reason: "regenerated", detail: `Superseded by a manual regenerate on ${new Date().toISOString().slice(0, 10)}.` } }).eq("id", existingDraft.id);
       console.log(JSON.stringify({ event: "regenerate_superseded", contact_id: contact.id, superseded_touch_id: existingDraft.id }));
@@ -460,8 +475,8 @@ Deno.serve(async (req) => {
     }
 
     const { data: prevRows } = await supabase.from("outreach_log")
-      .select("touch_date, channel, touch_type, message_body, sent_body, subject_line, reply_content, sent_by, send_status")
-      .eq("team_id", PIER_TEAM_ID).eq("contact_id", contactId).order("touch_date", { ascending: true }).limit(50);
+      .select("touch_date, channel, touch_type, message_body, sent_body, subject_line, reply_content, sent_by, send_status, draft_narrative, draft_guardrails, created_at")
+      .eq("team_id", PIER_TEAM_ID).eq("contact_id", contactId).order("touch_date", { ascending: true }).order("created_at", { ascending: true }).limit(50);
     // Only the last 30 days count as "live" thread context; older messages are summarised as a
     // re-engagement note so stale threads never derail the draft (older = stale, ignore the detail).
     // F10.2: only what actually went out (or came in) is history. Drafts, superseded drafts and
@@ -470,9 +485,18 @@ Deno.serve(async (req) => {
     // F9.5b: the target language is decided here, explicitly, and told to the model.
     const target = resolveTargetLanguage(allPrev, contact.language_code, company?.country ?? null);
     console.log(JSON.stringify({ event: "language_resolved", contact_id: contact.id, language: target.language, reason: target.reason }));
+    // F15.6 CONTEXT PER TYPE (matrix): an opener sees company + contact only (no thread exists); a chaser
+    // sees the opener IN FULL plus the narrative/guardrails that produced it plus every earlier chaser on
+    // this channel; a reply sees the WHOLE conversation in date order, nothing summarised away. The
+    // 30-day cutoff applies only to chasers.
     const cutoff = new Date(Date.now() - 30 * 86400000).toISOString().slice(0, 10);
-    const recent = allPrev.filter((r) => String(r.touch_date ?? "") >= cutoff);
-    const older = allPrev.filter((r) => String(r.touch_date ?? "") < cutoff);
+    const isReplyDraft = effectiveTrigger === "follow_up";
+    const openerRow = isChaser ? allPrev.find((r) => r.touch_type !== "Reply" && String(r.channel) === mapped.channel) : undefined;
+    // A chaser always sees the thread it is chasing: the opener and every earlier chaser on this channel,
+    // however old; the 30-day cutoff only trims unrelated history.
+    const onChase = (r: typeof allPrev[number]) => isChaser && r.touch_type !== "Reply" && String(r.channel) === mapped.channel;
+    const recent = isReplyDraft ? allPrev : allPrev.filter((r) => onChase(r) || String(r.touch_date ?? "") >= cutoff);
+    const older = isReplyDraft ? [] : allPrev.filter((r) => !onChase(r) && String(r.touch_date ?? "") < cutoff);
     // Render each historical touch exactly once, correctly attributed by sender.
     // touch_type='Reply' rows are INBOUND (from the contact); capture-and-classify
     // writes the reply text into BOTH message_body and reply_content, so render only
@@ -488,14 +512,21 @@ Deno.serve(async (req) => {
       }
       const subj = r.subject_line ? `[${r.subject_line}] ` : "";
       // C6: prefer what was ACTUALLY sent (including edits) over the working draft,
-      // so the no-repetition check compares against reality.
-      const body = String(r.sent_body ?? r.message_body ?? "").slice(0, 500);
+      // so the no-repetition check compares against reality. F15.6: the opener a chaser follows,
+      // and every message in a reply thread, are rendered in full; other history is trimmed.
+      const full = isReplyDraft || (isChaser && r === openerRow);
+      const body = String(r.sent_body ?? r.message_body ?? "").slice(0, full ? 4000 : 500);
       // Historical touches are attributed to whoever actually sent them, not to the
       // current requester - otherwise Jack would appear to have sent Oli's old messages.
       const who = String(r.sent_by ?? "").trim() || "us";
       return `- ${date} ${who}: ${subj}${body}`;
     };
     let threadText: string;
+    // F15.6: what produced the opener travels with the chase. draft_narrative / draft_guardrails are
+    // persisted on every agent draft since v28 and survive dispatch on the same row.
+    const openerContext = openerRow && (openerRow.draft_narrative || (Array.isArray(openerRow.draft_guardrails) && openerRow.draft_guardrails.length))
+      ? `\nCONTEXT THAT PRODUCED THE OPENER (operator-side, never quote it): ${openerRow.draft_narrative ?? ""}${Array.isArray(openerRow.draft_guardrails) && openerRow.draft_guardrails.length ? ` Guardrails then: ${openerRow.draft_guardrails.join("; ")}` : ""}\n`
+      : "";
     if (allPrev.length === 0) {
       // No history at all. Describe that honestly and let the trigger's intent say what
       // kind of first touch this is - a cold InMail is not "someone who just accepted".
@@ -505,24 +536,63 @@ Deno.serve(async (req) => {
       threadText = `(no messages in the last 30 days; ${older.length} earlier message(s), most recent ${last}. Treat this as RE-ENGAGEMENT: write a fresh forward nudge, do NOT reuse a first-touch opener, do NOT mention the time gap.)`;
     } else {
       const olderNote = older.length ? `(plus ${older.length} earlier message(s) before ${cutoff}, omitted as stale - do not repeat those openers)\n` : "";
-      threadText = olderNote + recent.map(renderMsg).join("\n");
+      threadText = olderNote + openerContext + recent.map(renderMsg).join("\n");
     }
 
+    // F15.6 VOICE STACK (manifest 002_DRAFT_STACK): layer 1 pier_rules, layer 2 pier_terminology, layer 3
+    // the channel architect (linkedin_architect / email_architect), layer 4 voice_oliver ONLY for the
+    // first message after CR accepted (r4) and a warm email reply (r8). Every other touch type (mid-thread
+    // LinkedIn replies, chasers, cold InMail, cold email) runs layers 1-3. Versions are stamped on the row.
+    const useEmailArchitect = mapped.channel === "Email";
+    const layer4Type = (effectiveTrigger === "cr_accepted") ? "first_message_after_cr"
+                     : (isReplyDraft && mapped.channel === "Email") ? "warm_email_reply" : null;
+    const voiceIds = ["pier_rules", "pier_terminology", useEmailArchitect ? "email_architect" : "linkedin_architect", ...(layer4Type ? ["voice_oliver"] : [])];
     let systemPrompt = "";
     let eaDocsLoaded = false;
+    // deno-lint-ignore no-explicit-any
+    let systemBlocks: any[] | null = null;
+    const voiceStackVersions: Record<string, string> = {};
     try {
-      const { data: docs, error: dErr } = await supabase.from("pier_ea_documents").select("name, content")
-        .eq("team_id", PIER_TEAM_ID).eq("is_active", true).in("name", EA_ORDER);
-      if (dErr) throw dErr;
-      const byName = new Map(((docs ?? []) as Array<{ name: string; content: string }>).map((d) => [d.name, d.content]));
-      const parts: string[] = [];
-      for (const n of EA_ORDER) { const c = byName.get(n); if (c) parts.push(`===== ${n} =====\n${c}`); }
-      systemPrompt = parts.length === 0 ? basicVoiceFallback(sender) : parts.join("\n\n");
-      eaDocsLoaded = parts.length > 0;
-      if (parts.length === 0) console.warn(JSON.stringify({ event: "ea_docs_empty" }));
+      const { data: va, error: vErr } = await supabase.from("voice_assets").select("id, layer, body, version, applies_to")
+        .eq("team_id", PIER_TEAM_ID).in("id", voiceIds);
+      if (vErr) throw vErr;
+      const byId = new Map(((va ?? []) as Array<{ id: string; layer: number; body: string; version: string; applies_to: string[] }>).map((v) => [v.id, v]));
+      const l1 = byId.get("pier_rules"), l2 = byId.get("pier_terminology"), l3 = byId.get(voiceIds[2]), l4 = layer4Type ? byId.get("voice_oliver") : undefined;
+      if (l1?.body && l2?.body && l3?.body && (!layer4Type || l4?.body)) {
+        for (const v of [l1, l2, l3, l4]) if (v) voiceStackVersions[v.id] = v.version;
+        // Cache breakpoints: layers 1+2 are identical on every call (one block), layer 3 has two variants,
+        // layer 4 is appended only on r4/r8. Each static block carries its own breakpoint.
+        systemBlocks = [
+          { type: "text", text: `===== LAYER 1: ${l1.id} (${l1.version}) =====\n${l1.body}\n\n===== LAYER 2: ${l2.id} (${l2.version}) =====\n${l2.body}`, cache_control: { type: "ephemeral" } },
+          { type: "text", text: `===== LAYER 3: ${l3.id} (${l3.version}) =====\n${l3.body}`, cache_control: { type: "ephemeral" } },
+        ];
+        if (l4) systemBlocks.push({ type: "text", text: `===== LAYER 4: ${l4.id} (${l4.version}) - applies to this touch type: ${layer4Type} =====\n${l4.body}`, cache_control: { type: "ephemeral" } });
+        systemPrompt = systemBlocks.map((b) => b.text).join("\n\n");
+        eaDocsLoaded = true;
+        console.log(JSON.stringify({ event: "voice_stack_loaded", contact_id: contact.id, layers: Object.keys(voiceStackVersions), layer4: layer4Type }));
+      } else {
+        console.warn(JSON.stringify({ event: "voice_stack_incomplete", have: Array.from(byId.keys()), wanted: voiceIds }));
+      }
     } catch (e) {
-      console.warn(JSON.stringify({ event: "ea_docs_load_failed", message: (e as Error).message }));
-      systemPrompt = basicVoiceFallback(sender);
+      console.warn(JSON.stringify({ event: "voice_stack_load_failed", message: (e as Error).message }));
+    }
+    if (!systemBlocks) {
+      // Fallback only: the pre-F15.6 EA document stack.
+      try {
+        const { data: docs, error: dErr } = await supabase.from("pier_ea_documents").select("name, content")
+          .eq("team_id", PIER_TEAM_ID).eq("is_active", true).in("name", EA_ORDER);
+        if (dErr) throw dErr;
+        const byName = new Map(((docs ?? []) as Array<{ name: string; content: string }>).map((d) => [d.name, d.content]));
+        const parts: string[] = [];
+        for (const n of EA_ORDER) { const c = byName.get(n); if (c) parts.push(`===== ${n} =====\n${c}`); }
+        systemPrompt = parts.length === 0 ? basicVoiceFallback(sender) : parts.join("\n\n");
+        eaDocsLoaded = parts.length > 0;
+        if (eaDocsLoaded) { voiceStackVersions["pier_ea_documents"] = "fallback"; systemBlocks = [{ type: "text", text: systemPrompt, cache_control: { type: "ephemeral" } }]; }
+        if (parts.length === 0) console.warn(JSON.stringify({ event: "ea_docs_empty" }));
+      } catch (e) {
+        console.warn(JSON.stringify({ event: "ea_docs_load_failed", message: (e as Error).message }));
+        systemPrompt = basicVoiceFallback(sender);
+      }
     }
 
     // B2 PROMPT CACHING. The EA documents are ~39k tokens and identical on every call;
@@ -535,11 +605,8 @@ Deno.serve(async (req) => {
     // varies by sender, so caching it would pay the 1.25x write premium for no reads.
     const directive = forwardDirective(mapped, sender);
     // deno-lint-ignore no-explicit-any
-    const systemParam: any = eaDocsLoaded
-      ? [
-          { type: "text", text: systemPrompt, cache_control: { type: "ephemeral" } },
-          { type: "text", text: directive },
-        ]
+    const systemParam: any = (eaDocsLoaded && systemBlocks)
+      ? [...systemBlocks, { type: "text", text: directive }]
       : systemPrompt + directive;
     // Kept for the failure log line below, which reports prompt size.
     systemPrompt = systemPrompt + directive;
@@ -555,7 +622,7 @@ Deno.serve(async (req) => {
     // F6.6: next_action, background_notes and conversation_summary, clearly labelled, with the
     // two rules stated in the prompt text (gates override notes; note dates matter).
     const notesBlock = contactNotesBlock({ next_action: contact.next_action, next_action_date: contact.next_action_date, background_notes: contact.background_notes, conversation_summary: contact.conversation_summary, today: todayIso });
-    const userPrompt = `DRAFT REQUEST\n\nTrigger: ${triggerReason}\nMessage type: ${mapped.touch_type} via ${mapped.channel}\nChannel: ${mapped.channel}\nIntent: ${mapped.intent}\nPath: ${path}\nFrame: ${frame}\nArc: ${arc}\n\nCONTACT\nName: ${contact.first_name ?? ""} ${contact.last_name ?? ""}\nTitle: ${contact.job_title ?? ""}\nSeniority: ${contact.seniority ?? ""}\nFunction: ${contact.function ?? ""}\nLocation: ${contact.location ?? ""}\nLinkedIn URL: ${contact.linkedin_url ?? ""}\nLanguage: WRITE IN ${LANG_NAMES[target.language] ?? target.language} (${target.language}). Reason: ${target.reason}. This overrides the contact's Language field.\nRegister: ${registerLine(contact.formality, target.language)}\n\nCOMPANY\nName: ${co.company_name ?? ""}\nCountry: ${co.country ?? ""}\nCategory: ${Array.isArray(co.category) ? co.category.join(", ") : (co.category ?? "")}\nPriority: ${co.priority ?? ""}\nIndustry: ${co.industry ?? ""}\nProduct line: ${co.product_line ?? ""}\nInsurance offered: ${co.insurance_offered ?? ""}\nInsurance provider: ${co.insurance_provider ?? ""}\nCoverage summary: ${co.coverage_summary ?? ""}\nUSP notes: ${co.usp_notes ?? ""}\nAdditional notes: ${co.additional_notes ?? ""}\nEstimated revenue: ${co.estimated_revenue_gbp ?? ""}\nEmployees: ${co.employees ?? ""}\nMonthly visits: ${co.monthly_visits ?? ""}\n\n${notesBlock}\n\nPREVIOUS OUTREACH (background only - never mention it in the message)\n${threadText}\n\nTASK\nWrite the single ${mapped.channel} message ${sender} should send to this contact now, applying the loaded PIER_Rules, LinkedIn_Message_Architect, Lead_and_ICP_Brief, OUTREACH_QUICK_REFERENCE, and PIER_Response_Bank. This message is a "${mapped.touch_type}": ${mapped.intent} If prior outreach exists, write a natural forward message (re-engagement) - never a first-touch opener and never a comment on the history.\n\nSign off: ${sender}\n\nReturn ONLY the JSON object described in the drafting directive. The "message" value is what ${sender} sends: no preamble, no meta-commentary, no notes about prior messages, no subject line.`;
+    const userPrompt = `DRAFT REQUEST\n\nTrigger: ${triggerReason}\nMessage type: ${mapped.touch_type} via ${mapped.channel}\nChannel: ${mapped.channel}\nIntent: ${mapped.intent}\nPath: ${path}\nFrame: ${frame}\nArc: ${arc}\n\nCONTACT\nName: ${contact.first_name ?? ""} ${contact.last_name ?? ""}\nTitle: ${contact.job_title ?? ""}\nSeniority: ${contact.seniority ?? ""}\nFunction: ${contact.function ?? ""}\nLocation: ${contact.location ?? ""}\nLinkedIn URL: ${contact.linkedin_url ?? ""}\nLanguage: WRITE IN ${LANG_NAMES[target.language] ?? target.language} (${target.language}). Reason: ${target.reason}. This overrides the contact's Language field.\nRegister: ${registerLine(contact.formality, target.language)}\n\nCOMPANY\nName: ${co.company_name ?? ""}\nCountry: ${co.country ?? ""}\nCategory: ${Array.isArray(co.category) ? co.category.join(", ") : (co.category ?? "")}\nPriority: ${co.priority ?? ""}\nIndustry: ${co.industry ?? ""}\nProduct line: ${co.product_line ?? ""}\nInsurance offered: ${co.insurance_offered ?? ""}\nInsurance provider: ${co.insurance_provider ?? ""}\nCoverage summary: ${co.coverage_summary ?? ""}\nUSP notes: ${co.usp_notes ?? ""}\nAdditional notes: ${co.additional_notes ?? ""}\nEstimated revenue: ${co.estimated_revenue_gbp ?? ""}\nEmployees: ${co.employees ?? ""}\nMonthly visits: ${co.monthly_visits ?? ""}\n\n${notesBlock}\n\nPREVIOUS OUTREACH (background only - never mention it in the message)\n${threadText}\n\nTASK\nWrite the single ${mapped.channel} message ${sender} should send to this contact now, applying the loaded voice stack (rules, terminology, the channel architect${layer4Type ? ", and Oliver's own voice for this touch type" : ""}). This message is a "${mapped.touch_type}": ${mapped.intent} If prior outreach exists, write a natural forward message (re-engagement) - never a first-touch opener and never a comment on the history.\n\nSign off: ${sender}\n\nReturn ONLY the JSON object described in the drafting directive. The "message" value is what ${sender} sends: no preamble, no meta-commentary, no notes about prior messages, no subject line.`;
 
     let messageBody = "";
     let draftNarrative: string | null = null;
@@ -578,7 +645,7 @@ Deno.serve(async (req) => {
         messages: [{ role: "user", content: userPrompt }],
         function_name: "generate-draft-from-context",
         team_id: PIER_TEAM_ID,
-        request_context: { contact_id: contact.id, trigger_reason: triggerReason, touch_type: mapped.touch_type, sender, purpose: "draft_generation", dry_run: dryRun },
+        request_context: { contact_id: contact.id, trigger_reason: triggerReason, touch_type: mapped.touch_type, sender, purpose: "draft_generation", dry_run: dryRun, voice_stack: voiceStackVersions, layer4: layer4Type },
         supabase,
         anthropic_api_key: ANTHROPIC_API_KEY,
       });
@@ -645,7 +712,7 @@ Deno.serve(async (req) => {
     // test drafts in Pending Review for Oli to clean up.
     if (dryRun) {
       console.log(JSON.stringify({ event: "draft_dry_run", contact_id: contact.id, usage, estimated_cost_gbp: costGbp }));
-      return json(200, { status: "dry_run", contact_id: contact.id, sender, usage, estimated_cost_gbp: costGbp, narrative: draftNarrative, guardrails: draftGuardrails, message_preview: messageBody.slice(0, 300), message: messageBody, lint_score: lint.score, draft_language: draftLanguage, draft_language_reason: draftLanguageReason, sign_off_appended: signOffAppended, touch_type: mapped.touch_type, channel: mapped.channel, effective_trigger: effectiveTrigger, routing_notes: routingNotes, thread_context: threadText.slice(0, 600) });
+      return json(200, { status: "dry_run", contact_id: contact.id, sender, usage, voice_stack_versions: voiceStackVersions, layer4: layer4Type, estimated_cost_gbp: costGbp, narrative: draftNarrative, guardrails: draftGuardrails, message_preview: messageBody.slice(0, 300), message: messageBody, lint_score: lint.score, draft_language: draftLanguage, draft_language_reason: draftLanguageReason, sign_off_appended: signOffAppended, touch_type: mapped.touch_type, channel: mapped.channel, effective_trigger: effectiveTrigger, routing_notes: routingNotes, thread_context: threadText.slice(0, 600) });
     }
 
     const today = new Date().toISOString().slice(0, 10);
@@ -659,6 +726,7 @@ Deno.serve(async (req) => {
       sent_by: null, created_by: requestingUser || "agent",
       draft_narrative: draftNarrative, draft_guardrails: draftGuardrails,
       draft_language: draftLanguage, draft_language_reason: draftLanguageReason,
+      voice_stack_versions: Object.keys(voiceStackVersions).length ? voiceStackVersions : null,
     };
     const { data: inserted, error: insErr } = await supabase.from("outreach_log").insert(insertRow).select("id").single();
     if (insErr) throw insErr;
