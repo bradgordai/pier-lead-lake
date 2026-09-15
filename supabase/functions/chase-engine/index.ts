@@ -1,4 +1,4 @@
-// Edge Function: chase-engine  (Batch B B5, reworked for Batch C C1/T2; F13.4 chaser_drafted; F14.4 2026-09-14 first message after CR behind a flag; F15.2 2026-09-15 routing matrix: chasers only after a real message on the same channel, r1 cold InMail openers under cold_inmail_openers_per_run)
+// Edge Function: chase-engine  (Batch B B5, reworked for Batch C C1/T2; F13.4 chaser_drafted; F14.4 2026-09-14 first message after CR behind a flag; F15.2 2026-09-15 routing matrix; F16.1 2026-09-15 per-section refusal maps + reconciles flag)
 //
 // Daily. Finds contacts due a chaser, evaluates every one through the C5 refusal gates,
 // drafts the survivors via generate-draft-from-context, and advances chase state.
@@ -131,7 +131,10 @@ Deno.serve(async (req) => {
     const backlog = ((allDue ?? []) as Candidate[]).length;
 
     const results: Array<Record<string, unknown>> = [];
+    // F16.1(c): one refusal map PER SECTION. A shared map made the summary total 18 against 13 considered.
     const refusedByCode: Record<string, number> = {};
+    const coldRefusedByCode: Record<string, number> = {};
+    const firstRefusedByCode: Record<string, number> = {};
     let drafted = 0, refused = 0, skipped = 0, failed = 0;
 
     async function handle(c: Candidate) {
@@ -255,7 +258,7 @@ Deno.serve(async (req) => {
         const gate = (gateRows ?? [])[0];
         if (gate) {
           firstRefused++;
-          refusedByCode[gate.reason_code] = (refusedByCode[gate.reason_code] ?? 0) + 1;
+          firstRefusedByCode[gate.reason_code] = (firstRefusedByCode[gate.reason_code] ?? 0) + 1;
           if (!dryRun) {
             const since = new Date(today.getTime() - 24 * 3600 * 1000).toISOString();
             const { data: dup } = await supabase.from("refusals").select("id")
@@ -286,7 +289,7 @@ Deno.serve(async (req) => {
           });
           const out = await resp.json().catch(() => ({}));
           if (out?.status === "created") { firstDrafted++; firstResults.push({ contact_id: f.contact_id, drafted: "first_message_after_cr", touch_id: out.touch_id }); }
-          else if (out?.refused) { firstRefused++; refusedByCode[out.reason_code] = (refusedByCode[out.reason_code] ?? 0) + 1; firstResults.push({ contact_id: f.contact_id, refused: out.reason_code, via: "drafter" }); }
+          else if (out?.refused) { firstRefused++; firstRefusedByCode[out.reason_code] = (firstRefusedByCode[out.reason_code] ?? 0) + 1; firstResults.push({ contact_id: f.contact_id, refused: out.reason_code, via: "drafter" }); }
           else { firstFailed++; firstResults.push({ contact_id: f.contact_id, error: out?.status ?? out?.error ?? "unknown" }); }
         } catch (e) {
           firstFailed++; firstResults.push({ contact_id: f.contact_id, error: (e as Error).message ?? String(e) });
@@ -316,7 +319,7 @@ Deno.serve(async (req) => {
         const gate = (gateRows ?? [])[0];
         if (gate) {
           coldRefused++;
-          refusedByCode[gate.reason_code] = (refusedByCode[gate.reason_code] ?? 0) + 1;
+          coldRefusedByCode[gate.reason_code] = (coldRefusedByCode[gate.reason_code] ?? 0) + 1;
           if (!dryRun) {
             const since = new Date(today.getTime() - 24 * 3600 * 1000).toISOString();
             const { data: dup } = await supabase.from("refusals").select("id")
@@ -343,7 +346,7 @@ Deno.serve(async (req) => {
           });
           const out = await resp.json().catch(() => ({}));
           if (out?.status === "created") { coldDrafted++; coldResults.push({ contact_id: k.contact_id, drafted: "inmail_cold", produced: out?.touch_type, touch_id: out.touch_id }); }
-          else if (out?.refused) { coldRefused++; refusedByCode[out.reason_code] = (refusedByCode[out.reason_code] ?? 0) + 1; coldResults.push({ contact_id: k.contact_id, refused: out.reason_code, via: "drafter" }); }
+          else if (out?.refused) { coldRefused++; coldRefusedByCode[out.reason_code] = (coldRefusedByCode[out.reason_code] ?? 0) + 1; coldResults.push({ contact_id: k.contact_id, refused: out.reason_code, via: "drafter" }); }
           else { coldFailed++; coldResults.push({ contact_id: k.contact_id, error: out?.status ?? out?.error ?? "unknown" }); }
         } catch (e) {
           coldFailed++; coldResults.push({ contact_id: k.contact_id, error: (e as Error).message ?? String(e) });
@@ -365,8 +368,13 @@ Deno.serve(async (req) => {
       drafted, refused, skipped, failed,
       refused_by_reason_code: refusedByCode,
       exhausted_handled: exhaustedHandled,
-      cold_inmail_openers: { cap_per_run: coldCap, backlog: coldBacklog, considered: coldConsidered, drafted: coldDrafted, refused: coldRefused, failed: coldFailed, results: coldResults },
-      first_message_after_cr: { enabled: firstMsgEnabled, cap_per_run: firstMsgCap, considered: firstConsidered, drafted: firstDrafted, refused: firstRefused, failed: firstFailed, results: firstResults },
+      cold_inmail_openers: { cap_per_run: coldCap, backlog: coldBacklog, considered: coldConsidered, drafted: coldDrafted, refused: coldRefused, failed: coldFailed, refused_by_reason_code: coldRefusedByCode, results: coldResults },
+      first_message_after_cr: { enabled: firstMsgEnabled, cap_per_run: firstMsgCap, considered: firstConsidered, drafted: firstDrafted, refused: firstRefused, failed: firstFailed, refused_by_reason_code: firstRefusedByCode, results: firstResults },
+      // F16.1(c): every section's reason-code total must equal its refused count; the run is flagged if not.
+      reconciles: Object.values(refusedByCode).reduce((x, y) => x + y, 0) === refused
+        && Object.values(coldRefusedByCode).reduce((x, y) => x + y, 0) === coldRefused
+        && Object.values(firstRefusedByCode).reduce((x, y) => x + y, 0) === firstRefused
+        && drafted + refused + skipped + failed === list.length,
       results,
     };
     console.log(JSON.stringify({ event: "chase_engine_run", ...summary, results: undefined }));

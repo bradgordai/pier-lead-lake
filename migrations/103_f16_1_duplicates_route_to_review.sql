@@ -1,0 +1,7 @@
+-- 103 F16.1 (2026-09-15): duplicates are merge candidates, not group collisions; out_of_scope never blocks.
+-- fn_group_siblings_engaged excludes pairs returned by fn_company_duplicate_candidates(team, company) and treats a
+-- sibling as engaged ONLY when: monday_deal_id is set, archive_reason = 'promoted_to_monday', opportunity_status in
+-- (Contacted, Active Lead, Partner), or a contact is at Contacted / In conversation / Meeting booked.
+-- archive_reason inventory: promoted_to_monday = 66 (blocks), out_of_scope = 289 (does NOT block). No other reasons exist.
+-- company_alerts: alert_type check widened to duplicate_candidate, detail jsonb added, one open alert per company
+-- listing its duplicate siblings (uq_company_alerts_open allows one open alert per company and type). Nothing merged.

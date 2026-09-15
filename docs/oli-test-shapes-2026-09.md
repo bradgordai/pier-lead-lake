@@ -253,3 +253,28 @@ select (select count(*) from outreach_log where agent_produced and created_at > 
 ```
 
 Behavioural checks (dry runs, nothing written): POST generate-draft-from-context with dry_run:true for (i) a Withdrawn contact with a bare CR and trigger chaser_1: expect touch_type Initial message, channel LinkedIn inMail, routing_notes non-empty; (ii) the same contact with trigger cr_accepted: expect channel LinkedIn inMail; (iii) an Accepted contact with a sent DM and trigger chaser_1: expect Chaser 1 on LinkedIn DM, voice_stack_versions without voice_oliver; (iv) an Accepted, never-messaged contact with trigger cr_accepted: expect layer4 = first_message_after_cr. POST chase-engine with dry_run:true: candidates_by_route must show only cr_not_accepted (LinkedIn inMail) and accepted_chase (LinkedIn DM), and cold_inmail_openers.considered <= cold_inmail_openers_per_run.
+
+## F16.1 regression set (2026-09-15) — group guard
+
+```sql
+-- F16-1a No draft at Draft / Ready / Scheduled (measured send_status values) for a contact whose company has a
+-- GENUINELY engaged group sibling (duplicates and out_of_scope excluded), for ANY request type. Expect 0.
+select count(*) from outreach_log o join contacts c on c.id=o.contact_id
+ where o.send_status::text in ('Draft','Ready','Scheduled') and o.draft_status::text = 'pending_review'
+   and exists (select 1 from fn_group_siblings_engaged(c.team_id, c.company_id));
+-- F16-1b The guard is not scoped by request type: the same contact refuses on chaser, reply and initial_message alike.
+select count(distinct r) from (select coalesce((select reason_code from fn_evaluate_gates(c.team_id,c.id,'LinkedIn DM',req) limit 1),'PASS') r
+  from contacts c cross join (values ('initial_message'),('chaser'),('reply')) v(req) where c.contact_id='P285-any') x;  -- pick a Save Group contact; expect 1 distinct value
+-- F16-1c Duplicate candidates never block: every pair in fn_company_duplicate_candidates is absent from fn_group_siblings_engaged. Expect 0.
+select count(*) from fn_company_duplicate_candidates('ef73c15e-4d6f-4159-bcfa-cc76b5ae4972') d
+ where exists (select 1 from fn_group_siblings_engaged('ef73c15e-4d6f-4159-bcfa-cc76b5ae4972', d.company_id) g where g.company_id = d.sibling_id);
+-- F16-1d out_of_scope never blocks: no engaged sibling whose only claim is archive_reason out_of_scope. Expect 0.
+select count(*) from companies me cross join lateral fn_group_siblings_engaged(me.team_id, me.id) g join companies s on s.id=g.company_id
+ where s.archive_reason='out_of_scope' and s.monday_deal_id is null and s.opportunity_status::text not in ('Contacted','Active Lead','Partner')
+   and not exists (select 1 from contacts c where c.company_id=s.id and c.outreach_status::text in ('Contacted','In conversation','Meeting booked'));
+-- F16-1e Gate cost: one fn_evaluate_gates call under 500 ms (was 3539 ms before migration 102).
+-- F16-1f Chase engine summary reconciles: the dry-run JSON carries reconciles = true.
+-- SEC-1 No cron job command references cron.job; every job calling an Edge Function carries its own Authorization header.
+select jobid, jobname, (command ilike '%cron.job%') refs_cron_job, (command ilike '%functions/v1%') calls_ef, (command ilike '%authorization%') has_auth
+  from cron.job;  -- expect refs_cron_job false everywhere and has_auth true wherever calls_ef is true. Never select the raw command.
+```

@@ -1,0 +1,5 @@
+-- 102 F16.1 fix (2026-09-15): fn_company_group_pairs cross-joined 1140 x 1140 companies on every gate call
+-- (3539 ms per fn_evaluate_gates). Rules unchanged; a company filter is applied on both sides BEFORE the join.
+-- Applied via apply_migration; body: fn_company_group_pairs(p_team_id, p_company_id) with
+-- "(p_company_id is null or a.id = p_company_id or b.id = p_company_id)" on each rule, a 1-arg wrapper,
+-- and fn_group_siblings_engaged calling the 2-arg form. Measured after: 128 ms per gate call, 136 pairs / 66 companies unchanged.
