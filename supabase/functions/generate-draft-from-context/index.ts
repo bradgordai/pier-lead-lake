@@ -6,6 +6,7 @@ import { callAnthropicWithSentinel, BudgetExceededError } from "./_shared/anthro
 // with a short state-of-play after every draft. v28.
 // F10 (v32): owner signs, SENT-only thread context, created_by.
 // F15.2 (v33, 2026-09-15): routing matrix enforced and asserted for every caller (see ROUTING MATRIX block).
+// F16.3 (v36, 2026-09-15): a reply drafted for an unresearched company carries a visible note in narrative and guardrails.
 // F15.6/F15.9 (v34-v35, 2026-09-15): voice_assets stack (layers 1-3, layer 4 only for r4/r8) with version stamping;
 // context per type (opener: company+contact; chaser: opener in full + its narrative/guardrails + earlier chasers;
 // reply: whole thread); replies answered on the inbound channel; regenerate throttled to one per two minutes.
@@ -376,10 +377,14 @@ Deno.serve(async (req) => {
       return json(500, { error: "routing_invariant_violated", rule: "a", detail: "chaser with no real message sent on that channel" });
     }
 
+    const isReplyDraftEarly = effectiveTrigger === "follow_up";
     const requested = effectiveTrigger === "follow_up" ? "reply"
                     : isChaser ? "chaser"
                     : "initial_message";
 
+    // F16.3: when a reply is drafted for a company that is not deep researched (only possible with
+    // team_settings.reply_ignores_research_gate on), the draft must say so visibly.
+    let researchNote: string | null = null;
     const { data: gateRows, error: gateErr } = await supabase.rpc("fn_evaluate_gates", {
       p_team_id: PIER_TEAM_ID, p_contact_id: contact.id,
       p_channel: mapped.channel, p_requested: requested,
@@ -451,9 +456,13 @@ Deno.serve(async (req) => {
     let company: any = null;
     if (contact.company_id) {
       const { data: co } = await supabase.from("companies")
-        .select("company_name, country, category, priority, industry, product_line, insurance_offered, insurance_provider, coverage_summary, usp_notes, additional_notes, estimated_revenue_gbp, employees, monthly_visits, archived_at")
+        .select("company_name, country, category, priority, industry, product_line, insurance_offered, insurance_provider, coverage_summary, usp_notes, additional_notes, estimated_revenue_gbp, employees, monthly_visits, archived_at, research_stage")
         .eq("id", contact.company_id).maybeSingle();
       company = co ?? null;
+    }
+    if (isReplyDraftEarly && company && String(company.research_stage ?? "") !== "Deep research done") {
+      researchNote = `Company not deep researched (${company.research_stage ?? "no stage"}): this reply was written from the conversation only, not from company knowledge.`;
+      console.warn(JSON.stringify({ event: "reply_without_research", contact_id: contact.id, research_stage: company.research_stage ?? null }));
     }
     if (company?.archived_at) {
       // Archived company maps onto the closed reason-code set as dnc_or_opted_out: the
@@ -724,7 +733,8 @@ Deno.serve(async (req) => {
       path, recommended_frame: frame, recommended_arc: arc, touch_date: today,
       // F10.1: sent_by belongs to dispatch. created_by records who asked for the draft.
       sent_by: null, created_by: requestingUser || "agent",
-      draft_narrative: draftNarrative, draft_guardrails: draftGuardrails,
+      draft_narrative: researchNote ? `${researchNote} ${draftNarrative ?? ""}`.trim() : draftNarrative,
+      draft_guardrails: researchNote ? [researchNote, ...draftGuardrails].slice(0, 5) : draftGuardrails,
       draft_language: draftLanguage, draft_language_reason: draftLanguageReason,
       voice_stack_versions: Object.keys(voiceStackVersions).length ? voiceStackVersions : null,
     };
