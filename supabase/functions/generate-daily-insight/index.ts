@@ -12,7 +12,7 @@
 //   - force: regenerate even if a row already exists for that date
 
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
-import { authorize } from "./_shared/authorize.ts";
+import { authorizeRequest } from "./_shared/authorize.ts";
 import { callAnthropicWithSentinel, BudgetExceededError } from "./_shared/anthropic-sentinel.ts";
 
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
@@ -45,7 +45,7 @@ Deno.serve(async (req) => {
   if (req.method === "OPTIONS") return new Response("ok", { headers: cors });
   if (req.method !== "POST") return json(405, { error: "method_not_allowed" });
   // Scoped-secret auth (security audit CRITICAL 2).
-  if (!authorize(req, "internal", "generate-daily-insight")) return json(401, { error: "unauthorized" });
+  if (!(await authorizeRequest(req, "internal", "generate-daily-insight", createClient(SUPABASE_URL, SERVICE_ROLE))).ok) return json(401, { error: "unauthorized" });
   if (!ANTHROPIC_KEY) return json(500, { error: "ANTHROPIC_API_KEY not configured" });
 
   let body: any = {};
@@ -162,10 +162,10 @@ Do not describe them as if Oli sent them yesterday. Say they were "recorded" or 
 rather than "sent", and if CRs are the bulk of the activity, note plainly that these are
 backfilled historical records.
 
-DRAFTS WAITING - READ CAREFULLY. `drafts_waiting.pending_review_now` is the canonical
+DRAFTS WAITING - READ CAREFULLY. \`drafts_waiting.pending_review_now\` is the canonical
 count of drafts awaiting review and is the ONLY number you may describe as "pending" or
 "awaiting review"; it matches what Oli sees on Today and on the Outreach Pending Review tab.
-`drafts_waiting.agent_produced_pending` is the subset of those that the agent drafted. If you
+\`drafts_waiting.agent_produced_pending\` is the subset of those that the agent drafted. If you
 mention it at all, label it explicitly as agent-drafted, e.g. "75 awaiting review, 15 of them
 agent-drafted". NEVER present agent_produced_pending as the pending total.
 
@@ -220,6 +220,6 @@ Total prose across all sections 250-350 words. priority_flags and queue_recommen
   }, { onConflict: "team_id,insight_date" });
   if (upErr) return json(500, { error: "upsert_failed", detail: upErr.message });
 
-  console.log(JSON.stringify({ event: "daily_insight_generated", insight_date: dateStr, headline: content.headline }));
+  console.log(JSON.stringify({ event: "daily_insight_generated", insight_date: dateStr, headline: content.headline, canon_pending: canonPending, agent_produced_pending: agentProducedPending }));
   return json(200, { status: "generated", insight_date: dateStr, headline: content.headline, facts });
 });

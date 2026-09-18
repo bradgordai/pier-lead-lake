@@ -26,7 +26,7 @@
 //     therefore counted by channel + send_status, which is what the limit actually means.
 
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.45.4";
-import { authorize } from "./_shared/authorize.ts";
+import { authorizeRequest } from "./_shared/authorize.ts";
 
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL") ?? "";
 const SERVICE_ROLE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") ?? "";
@@ -97,7 +97,7 @@ Deno.serve(async (req) => {
   if (req.method !== "POST") return json(405, { error: "method_not_allowed" });
   if (!PIER_TEAM_ID) return json(500, { error: "server_misconfigured", detail: "PIER_TEAM_ID not set" });
 
-  if (!authorize(req, "internal", "send-approved-draft")) return json(401, { error: "unauthorized" });
+  if (!(await authorizeRequest(req, "internal", "send-approved-draft", supabase)).ok) return json(401, { error: "unauthorized" });
 
   // deno-lint-ignore no-explicit-any
   let body: any;

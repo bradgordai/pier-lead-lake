@@ -45,7 +45,7 @@
 // Auth: scoped bearer, inbound class (Make) or internal class (Lovable). verify_jwt=false.
 
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.45.4";
-import { authorize } from "./_shared/authorize.ts";
+import { authorize, authorizeRequest } from "./_shared/authorize.ts";
 import { callAnthropicWithSentinel, BudgetExceededError } from "./_shared/anthropic-sentinel.ts";
 import { contactNotesBlock, mergeAiStateOfPlay } from "./_shared/conversation-summary.ts";
 
@@ -587,7 +587,7 @@ async function processContainer(containerId: string, counts: Counts): Promise<nu
 Deno.serve(async (req) => {
   if (req.method !== "POST") return json(405, { error: "method_not_allowed" });
   if (!PIER_TEAM_ID) return json(500, { error: "server_misconfigured", detail: "PIER_TEAM_ID not set" });
-  if (!authorize(req, "inbound", "capture-and-classify-reply") && !authorize(req, "internal", "capture-and-classify-reply")) return json(401, { error: "unauthorized" });
+  if (!authorize(req, "inbound", "capture-and-classify-reply") && !(await authorizeRequest(req, "internal", "capture-and-classify-reply", supabase)).ok) return json(401, { error: "unauthorized" });
 
   // deno-lint-ignore no-explicit-any
   let body: any;

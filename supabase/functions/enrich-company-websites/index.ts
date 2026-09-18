@@ -15,7 +15,7 @@
 // Returns: { scanned, auto_written, queued, skipped_existing, apify_cost_hint }
 
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
-import { authorize } from "./_shared/authorize.ts";
+import { authorizeRequest } from "./_shared/authorize.ts";
 
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
 const SERVICE_ROLE = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
@@ -124,7 +124,7 @@ Deno.serve(async (req) => {
   if (req.method === "OPTIONS") return new Response("ok", { headers: cors });
   if (req.method !== "POST") return json(405, { error: "method_not_allowed" });
   // Scoped-secret auth (security audit CRITICAL 2).
-  if (!authorize(req, "internal", "enrich-company-websites")) return json(401, { error: "unauthorized" });
+  if (!(await authorizeRequest(req, "internal", "enrich-company-websites", createClient(SUPABASE_URL, SERVICE_ROLE))).ok) return json(401, { error: "unauthorized" });
   if (!APIFY_TOKEN) return json(500, { error: "APIFY_TOKEN not configured", hint: "Set APIFY_TOKEN in Supabase → Edge Functions → Secrets" });
 
   let body: any = {};

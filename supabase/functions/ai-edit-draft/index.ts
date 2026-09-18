@@ -23,7 +23,7 @@
 //       or { status: "budget_exceeded" } / { error }
 
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.45.4";
-import { authorize } from "./_shared/authorize.ts";
+import { authorizeRequest } from "./_shared/authorize.ts";
 import { callAnthropicWithSentinel, BudgetExceededError } from "./_shared/anthropic-sentinel.ts";
 // F6.6: the contact notes block (next_action, background_notes, conversation_summary) is part of
 // the edit context, with the two rules stated (gates override notes; note dates matter). v3.
@@ -106,7 +106,7 @@ function firstNameOf(display: string): string {
 Deno.serve(async (req) => {
   if (req.method !== "POST") return json(405, { error: "method_not_allowed" });
   if (!PIER_TEAM_ID) return json(500, { error: "server_misconfigured" });
-  if (!authorize(req, "internal", "ai-edit-draft")) return json(401, { error: "unauthorized" });
+  if (!(await authorizeRequest(req, "internal", "ai-edit-draft", supabase)).ok) return json(401, { error: "unauthorized" });
 
   // deno-lint-ignore no-explicit-any
   let body: any;

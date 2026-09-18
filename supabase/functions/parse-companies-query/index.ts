@@ -18,7 +18,7 @@
 // matching rather than writing.
 
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.45.4";
-import { authorize } from "./_shared/authorize.ts";
+import { authorizeRequest } from "./_shared/authorize.ts";
 import { callAnthropicWithSentinel, BudgetExceededError } from "./_shared/anthropic-sentinel.ts";
 
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL") ?? "";
@@ -74,7 +74,7 @@ Deno.serve(async (req) => {
   if (req.method === "OPTIONS") return new Response("ok", { headers: cors });
   if (req.method !== "POST") return json(405, { error: "method_not_allowed" });
   if (!PIER_TEAM_ID) return json(500, { error: "server_misconfigured" });
-  if (!authorize(req, "internal", "parse-companies-query")) return json(401, { error: "unauthorized" });
+  if (!(await authorizeRequest(req, "internal", "parse-companies-query", supabase)).ok) return json(401, { error: "unauthorized" });
 
   // deno-lint-ignore no-explicit-any
   let body: any;
