@@ -91,3 +91,25 @@ tg_audit_outreach_log exists on the table, so (f) should be answerable from audi
 
 ## i-number status
 - i053: measured, mechanism confirmed, fix designed, NOT applied. Blocked on the synthetic decision.
+
+---
+# Update 11:24-12:00, after Brad's ruling
+
+- (c)/(d) Migration 106 APPLIED: `observed_or_inferred` + `duplicate_of` + `touch_merge_log`. Backfill:
+  **observed 190, migrated_unverified 903, inferred 48** (46 synthetic + 2 cr-backfill). New rows default to
+  observed. Side effect I caused: the backfill wrote ~1,141 `updated` rows into audit_log, source `manual`,
+  at 10:24:49 UTC. They are noise, not activity.
+- (c) the Sent -> Cancelled flip for the 46 is WRITTEN, NOT APPLIED: supabase/migrations/107. It moves the
+  Sent tile by 46, the same number (b) was held for, so it waits for 14:00 with (b). Flag: the database holds
+  984 Sent rows while the UI tile reads 847; the tile filters something I have not identified, so the exact
+  post-flip figure is the tile's to show.
+- (f) ANSWERED: nothing rewrote a channel. audit_log (a trigger on every outreach_log update) shows ZERO
+  channel changes in 10 days. The channel tiles count live rows INCLUDING drafts (they do not match
+  Sent-by-channel: inMail 297, DM 186). 315->314 and 191->192 is one draft being re-routed from InMail to DM
+  by the routing matrix when its contact became connected: old draft superseded, new one created. Credit
+  accounting is untouched because it keys on Sent rows. It will keep happening and is correct; the tile is
+  mislabelled if it is read as "sent".
+- (e) "chaser 3 of 2": NOT FIXED. The footer is computed in Lovable. One of the two was Peretti, whose
+  surplus Chaser 3 drafts are now superseded. A server-side sequence view over observed, non-duplicate rows
+  is still to build.
+- (b) held until after 14:00, as instructed.

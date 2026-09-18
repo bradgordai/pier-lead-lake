@@ -102,7 +102,15 @@ Deno.serve(async (req) => {
   // deno-lint-ignore no-explicit-any
   let body: any;
   try { body = await req.json(); } catch { return json(400, { error: "invalid_json" }); }
-  const rowId = String(body?.outreach_log_id ?? "").trim();
+  // F17: { drain: true } (the every-minute cron) launches the oldest queued send that is due. Nothing is due, nothing happens.
+  const drain = body?.drain === true;
+  let rowId = String(body?.outreach_log_id ?? "").trim();
+  if (drain) {
+    const { data: dueId, error: dErr } = await supabase.rpc("fn_next_due_send", { p_team_id: PIER_TEAM_ID });
+    if (dErr) return json(500, { error: "drain_failed", detail: dErr.message });
+    if (!dueId) return json(200, { status: "nothing_due", test_mode: TEST_MODE });
+    rowId = String(dueId);
+  }
   if (!rowId) return json(400, { error: "missing_required_fields", detail: "outreach_log_id required" });
   // F16.15: dry_run runs every check up to the launch and returns would_launch / the refusal. Nothing is launched.
   const dryRun = body?.dry_run === true;
@@ -264,6 +272,21 @@ Deno.serve(async (req) => {
     }
 
     // Log the launch WITHOUT the argument (it carries the session cookie).
+    // F17: minimum spacing, enforced here and nowhere else. PhantomBuster runs one container per agent, so
+    // sends on one agent go 180-300 s apart (randomised). A send that arrives early is QUEUED, not failed;
+    // the drainer launches it when its slot comes up, and every gate above runs again at that moment.
+    const { data: slotRows, error: slotErr } = await supabase.rpc("fn_claim_send_slot", { p_team_id: PIER_TEAM_ID, p_outreach_log_id: rowId, p_agent_id: agentId });
+    if (slotErr) {
+      console.error(JSON.stringify({ event: "send_slot_failed", id: rowId, message: slotErr.message, test_mode: TEST_MODE }));
+      return json(500, { error: "send_slot_failed", detail: slotErr.message, test_mode: TEST_MODE });
+    }
+    const slot = (slotRows ?? [])[0];
+    if (!slot?.launch_now) {
+      await supabase.from("outreach_log").update({ send_status: "Ready" }).eq("id", rowId).eq("team_id", PIER_TEAM_ID);
+      console.log(JSON.stringify({ event: "send_queued", id: rowId, not_before: slot?.not_before, queue_position: slot?.queue_position, test_mode: TEST_MODE }));
+      return json(200, { status: "queued", send_after: slot?.not_before, queue_position: slot?.queue_position, channel, test_mode: TEST_MODE });
+    }
+
     console.log(JSON.stringify({ event: "launching", id: rowId, agent_id: agentId, channel, recipient: recipientUrl, test_mode: TEST_MODE, msg_len: messageText.length }));
 
     let containerId = "";
@@ -281,6 +304,7 @@ Deno.serve(async (req) => {
       const msg = (e as Error).message ?? String(e);
       await supabase.from("outreach_log").update({ send_status: "Cancelled", send_error: msg })
         .eq("id", rowId).eq("team_id", PIER_TEAM_ID);
+      await supabase.from("send_queue").update({ status: "failed", detail: msg.slice(0, 300) }).eq("outreach_log_id", rowId);
       console.error(JSON.stringify({ event: "launch_failed", id: rowId, message: msg, test_mode: TEST_MODE }));
       return json(500, { error: "launch_failed", detail: msg, test_mode: TEST_MODE });
     }
@@ -297,6 +321,7 @@ Deno.serve(async (req) => {
                 sent_body: messageText || null })
       .eq("id", rowId).eq("team_id", PIER_TEAM_ID);
     if (uErr) throw uErr;
+    await supabase.from("send_queue").update({ status: "launched", launched_at: new Date().toISOString() }).eq("outreach_log_id", rowId);
 
     // F1 (2026-09-07): an InMail costs a credit the moment it is dispatched. The ledger
     // function is idempotent per row, so a retried launch cannot double-charge. The

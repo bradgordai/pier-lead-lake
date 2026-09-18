@@ -431,7 +431,10 @@ Deno.serve(async (req) => {
       .eq("contact_id", contact.id)
       .eq("channel", mapped.channel)
       .eq("touch_type", mapped.touch_type)
-      .eq("draft_status", "pending_review")
+      // F17: an APPROVED but unsent draft is still open. Without this the engine re-drafted Peretti's
+      // Chaser 3 every day the send path was down (three open copies by 18 Sep).
+      .in("draft_status", ["pending_review", "approved"])
+      .in("send_status", ["Draft", "Ready"])
       .eq("agent_produced", true)
       .limit(1)
       .maybeSingle();
