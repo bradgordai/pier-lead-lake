@@ -37,7 +37,9 @@ const EA_ORDER = ["PIER_Rules", "LinkedIn_Message_Architect", "Lead_and_ICP_Brie
 //      ownership; messages go out from the owner's LinkedIn whoever pressed the button.
 //   2. body.requesting_user - only when the contact has no resolvable owner.
 //   3. "Oli" - last-resort legacy default, logged as a warning so it is visible.
-const NICKNAMES: Record<string, string> = { oliver: "Oli" };
+// F17 i067: no nickname by default. Oliver signs "Oliver" in cold outreach; "Oli" only where that contact has
+// already received a sent message from him signed "Oli" (resolved per contact below, never invented).
+const NICKNAMES: Record<string, string> = {};
 // Split on whitespace AND . _ - so an email local-part degrades sensibly:
 // "oliver.muller" -> "Oliver" rather than the whole handle. Capitalise the first
 // letter because local-parts are lowercase and the name is used mid-sentence and
@@ -71,8 +73,8 @@ async function resolveSender(supa: any, requesting: string, ownerUserId: string 
     console.warn(JSON.stringify({ event: "sender_from_requester", detail: "No resolvable owner; signing as the requesting user." }));
     return fromBody;
   }
-  console.warn(JSON.stringify({ event: "sender_defaulted", detail: "No owner and no requesting_user; defaulting to Oli." }));
-  return "Oli";
+  console.warn(JSON.stringify({ event: "sender_defaulted", detail: "No owner and no requesting_user; defaulting to Oliver." }));
+  return "Oliver";
 }
 const basicVoiceFallback = (sender: string) => `You are ${sender} at Pier Insurance, writing a first LinkedIn DM to a contact who just accepted your connection request. Voice: direct, warm, specific, peer-to-peer. No corporate jargon, no em-dashes/en-dashes. Keep it short (ideally under 600 characters). Reference something concrete about their company. End with a light, low-friction question. Sign off '${sender}'.`;
 // Highest-priority behavioural contract, appended AFTER the EA docs so it is the last thing the
@@ -416,7 +418,13 @@ Deno.serve(async (req) => {
       });
     }
 
-    const sender = await resolveSender(supabase, requestingUser, contact.owner_user_id ?? null);
+    let sender = await resolveSender(supabase, requestingUser, contact.owner_user_id ?? null);
+    if (sender === "Oliver") {
+      const { data: priorSent } = await supabase.from("outreach_log").select("sent_body, message_body")
+        .eq("team_id", PIER_TEAM_ID).eq("contact_id", contact.id).eq("send_status", "Sent").neq("touch_type", "Reply").limit(50);
+      const signedOli = (priorSent ?? []).some((r: { sent_body: string | null; message_body: string | null }) => /(^|[^\p{L}])Oli\s*$/u.test(String(r.sent_body ?? r.message_body ?? "").trimEnd()));
+      if (signedOli) sender = "Oli";
+    }
     console.log(JSON.stringify({ event: "sender_resolved", sender, from_body: !!requestingUser, contact_id: contact.id }));
 
     // Dedup guard: if an agent-produced pending_review draft already exists for this

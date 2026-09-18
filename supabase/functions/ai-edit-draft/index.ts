@@ -94,7 +94,8 @@ function editDirective(p: { channel: string; touch_type: string; sender: string;
   ].join("\n");
 }
 
-const NICKNAMES: Record<string, string> = { oliver: "Oli" };
+// F17 i067: no invented short form. An edit keeps the sign-off the draft already carries.
+const NICKNAMES: Record<string, string> = {};
 function firstNameOf(display: string): string {
   const first = (display ?? "").trim().split(/[\s._-]+/).filter(Boolean)[0] ?? "";
   if (!first) return "";
@@ -159,6 +160,8 @@ Deno.serve(async (req) => {
     }
     if (!sender) sender = String(row.sent_by ?? "").trim() || firstNameOf(requestingUser);
     if (!sender) sender = "the sender";
+    // F17 i067: "Oli" survives an edit only where the draft already signs that way (a relationship exists).
+    if (sender === "Oliver" && /(^|[^\p{L}])Oli\s*$/u.test(original)) sender = "Oli";
 
     // ALREADY SENT: what actually went out to this contact (sent_body first, C6), so the
     // rewrite cannot reintroduce a line Oli already used.

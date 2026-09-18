@@ -1,3 +1,10 @@
+-- *** DO NOT APPLY. Brad's decision, 18 Sep 2026. ***
+-- This job launches real LinkedIn sends unattended, which breaks the standing rule that nothing sends
+-- without Oliver. It stays unapplied until a human has watched the queue work. It is NOT in
+-- supabase_migrations.schema_migrations and must not be added by a bulk 'apply pending' run.
+-- Until it is applied, a send that is queued by the spacing rule stays queued (send_status Ready) and
+-- goes only when someone presses Send now again after its send_after time.
+
 -- 109 F17: the drainer. Every minute, ask send-approved-draft to launch the oldest queued send that is due.
 -- With an empty queue the function answers nothing_due and does nothing. It only ever launches a draft a
 -- human already pressed Send on; every gate re-runs at launch.
