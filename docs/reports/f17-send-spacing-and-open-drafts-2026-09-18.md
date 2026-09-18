@@ -28,4 +28,4 @@
   Approved-unsent is now 21.
 
 ## Deploy status
-(appended when the deploy agent reports)
+send-approved-draft v16 -> **v17**, generate-draft-from-context v40 -> **v41**. Pre-deploy: live source was byte-identical to the repo. Post-deploy: every file byte-identical to local. `node --check` passed. Neither function was called. Spacing and the queue are LIVE; the drainer cron (109) is still Brad's to apply.
