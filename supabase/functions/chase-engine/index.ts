@@ -76,7 +76,7 @@ Deno.serve(async (req) => {
 
   try {
     const { data: settings } = await supabase.from("team_settings")
-      .select("chase_interval_days, dm_chaser_cap, inmail_chaser_cap, cooldown_days, first_message_after_cr_enabled, first_message_cap_per_run, cold_inmail_openers_per_run")
+      .select("chase_interval_days, dm_chaser_cap, inmail_chaser_cap, cooldown_days, first_message_after_cr_enabled, first_message_cap_per_run, cold_inmail_openers_per_run, reply_sweep_per_run")
       .eq("team_id", PIER_TEAM_ID).maybeSingle();
     // F14.4: first messages after CR accepted are drafted here ONLY when the team flag is on. A
     // dry run may ask to preview them with { dry_run: true, include_first_messages: true }; that
@@ -355,6 +355,64 @@ Deno.serve(async (req) => {
       }
     }
 
+    // ---------------- 5. r7 reply sweep (F18.2). Anyone at chase_state 'replied' whose last inbound has no
+    // reply drafted since. Event-driven drafting only fires on a NEW inbound, so everyone who replied before
+    // it shipped was invisible. fn_reply_candidates excludes archived companies and anyone held in the review
+    // queue. Requested as 'reply' on the inbound channel; the drafter's trigger is follow_up. Capped per run.
+    const replyCap = Math.max(0, Math.min(25, Number((settings as Record<string, unknown> | null)?.reply_sweep_per_run ?? 5)));
+    let replyConsidered = 0, replyDrafted = 0, replyRefused = 0, replyFailed = 0, replyBacklog = 0;
+    const replyRefusedByCode: Record<string, number> = {};
+    const replyResults: Array<Record<string, unknown>> = [];
+    if (replyCap > 0) {
+      const { data: replyAll } = await supabase.rpc("fn_reply_candidates", { p_team_id: PIER_TEAM_ID, p_limit: 5000 });
+      replyBacklog = ((replyAll ?? []) as unknown[]).length;
+      const { data: replies, error: rpErr } = await supabase.rpc("fn_reply_candidates", { p_team_id: PIER_TEAM_ID, p_limit: replyCap });
+      if (rpErr) console.error(JSON.stringify({ event: "reply_candidates_failed", message: rpErr.message }));
+      for (const r of (replies ?? []) as Array<{ contact_id: string; company_id: string | null; inbound_channel: string | null; connection_status: string | null }>) {
+        replyConsidered++;
+        const connected = ["Accepted", "Already connected"].includes(String(r.connection_status ?? ""));
+        const channel = String(r.inbound_channel ?? "") === "Email" ? "Email" : connected ? "LinkedIn DM" : "LinkedIn inMail";
+        const { data: gateRows, error: gErr } = await supabase.rpc("fn_evaluate_gates", {
+          p_team_id: PIER_TEAM_ID, p_contact_id: r.contact_id, p_channel: channel, p_requested: "reply",
+        });
+        if (gErr) { replyFailed++; replyResults.push({ contact_id: r.contact_id, error: gErr.message }); continue; }
+        const gate = (gateRows ?? [])[0];
+        if (gate) {
+          replyRefused++;
+          replyRefusedByCode[gate.reason_code] = (replyRefusedByCode[gate.reason_code] ?? 0) + 1;
+          if (!dryRun) {
+            const since = new Date(today.getTime() - 24 * 3600 * 1000).toISOString();
+            const { data: dup } = await supabase.from("refusals").select("id")
+              .eq("team_id", PIER_TEAM_ID).eq("contact_id", r.contact_id)
+              .eq("reason_code", gate.reason_code).gte("created_at", since).limit(1).maybeSingle();
+            if (!dup) {
+              await supabase.from("refusals").insert({
+                team_id: PIER_TEAM_ID, contact_id: r.contact_id, company_id: r.company_id,
+                reason_code: gate.reason_code, reason_human: gate.reason_human, channel, requested: "reply",
+                context: { ...(gate.context ?? {}), source: "chase-engine", route: "reply_sweep" },
+              });
+            }
+          }
+          replyResults.push({ contact_id: r.contact_id, refused: gate.reason_code, route: "reply_sweep" });
+          continue;
+        }
+        if (dryRun) { replyDrafted++; replyResults.push({ contact_id: r.contact_id, would_draft: "follow_up", channel }); continue; }
+        try {
+          const resp = await fetch(`${SUPABASE_URL}/functions/v1/generate-draft-from-context`, {
+            method: "POST",
+            headers: { authorization: `Bearer ${INTERNAL_SECRET}`, "content-type": "application/json" },
+            body: JSON.stringify({ contact_id: r.contact_id, trigger_reason: "follow_up" }),
+          });
+          const out = await resp.json().catch(() => ({}));
+          if (out?.status === "created") { replyDrafted++; replyResults.push({ contact_id: r.contact_id, drafted: "follow_up", produced: out?.touch_type, channel: out?.channel, touch_id: out.touch_id }); }
+          else if (out?.refused) { replyRefused++; replyRefusedByCode[out.reason_code] = (replyRefusedByCode[out.reason_code] ?? 0) + 1; replyResults.push({ contact_id: r.contact_id, refused: out.reason_code, via: "drafter" }); }
+          else { replyFailed++; replyResults.push({ contact_id: r.contact_id, error: out?.status ?? out?.error ?? "unknown" }); }
+        } catch (e) {
+          replyFailed++; replyResults.push({ contact_id: r.contact_id, error: (e as Error).message ?? String(e) });
+        }
+      }
+    }
+
     const byRoute: Record<string, number> = {};
     for (const c of list) byRoute[`${c.route} (${c.channel}, cap ${c.cap})`] = (byRoute[`${c.route} (${c.channel}, cap ${c.cap})`] ?? 0) + 1;
 
@@ -370,11 +428,13 @@ Deno.serve(async (req) => {
       refused_by_reason_code: refusedByCode,
       exhausted_handled: exhaustedHandled,
       cold_inmail_openers: { cap_per_run: coldCap, backlog: coldBacklog, considered: coldConsidered, drafted: coldDrafted, refused: coldRefused, failed: coldFailed, refused_by_reason_code: coldRefusedByCode, results: coldResults },
+      reply_sweep: { cap_per_run: replyCap, backlog: replyBacklog, considered: replyConsidered, drafted: replyDrafted, refused: replyRefused, failed: replyFailed, refused_by_reason_code: replyRefusedByCode, results: replyResults },
       first_message_after_cr: { enabled: firstMsgEnabled, cap_per_run: firstMsgCap, considered: firstConsidered, drafted: firstDrafted, refused: firstRefused, failed: firstFailed, refused_by_reason_code: firstRefusedByCode, results: firstResults },
       // F16.1(c): every section's reason-code total must equal its refused count; the run is flagged if not.
       reconciles: Object.values(refusedByCode).reduce((x, y) => x + y, 0) === refused
         && Object.values(coldRefusedByCode).reduce((x, y) => x + y, 0) === coldRefused
         && Object.values(firstRefusedByCode).reduce((x, y) => x + y, 0) === firstRefused
+        && Object.values(replyRefusedByCode).reduce((x, y) => x + y, 0) === replyRefused
         && drafted + refused + skipped + failed === list.length,
       results,
     };
