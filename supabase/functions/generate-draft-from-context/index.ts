@@ -487,20 +487,20 @@ Deno.serve(async (req) => {
       console.warn(JSON.stringify({ event: "reply_without_research", contact_id: contact.id, research_stage: company.research_stage ?? null }));
     }
     if (company?.archived_at) {
-      // Archived company maps onto the closed reason-code set as dnc_or_opted_out: the
-      // company is out of scope, so the contact is excluded from outreach.
+      // F16.4 (2026-09-20): an archived company is a scope refusal, not a consent event, so it has its
+      // own code (company_archived, migration 119). dnc_or_opted_out is reserved for genuine opt-outs.
       if (!dryRun) {
         await supabase.from("refusals").insert({
           team_id: PIER_TEAM_ID, contact_id: contact.id, company_id: contact.company_id ?? null,
-          reason_code: "dnc_or_opted_out",
+          reason_code: "company_archived",
           reason_human: `${company.company_name ?? "The company"} is archived, so this contact is out of scope.`,
           channel: mapped.channel, requested: triggerReason,
           context: { company_archived_at: company.archived_at },
         });
         await raiseReconciliationNote(contact.id, triggerReason, ["company_archived"], contact);
       }
-      console.log(JSON.stringify({ event: "draft_refused", contact_id: contact.id, reason_code: "dnc_or_opted_out", detail: "company_archived", dry_run: dryRun }));
-      return json(200, { refused: true, reason_code: "dnc_or_opted_out",
+      console.log(JSON.stringify({ event: "draft_refused", contact_id: contact.id, reason_code: "company_archived", detail: "company_archived", dry_run: dryRun }));
+      return json(200, { refused: true, reason_code: "company_archived",
         reason_human: `${company.company_name ?? "The company"} is archived, so this contact is out of scope.`,
         contact_id: contact.id, dry_run: dryRun });
     }

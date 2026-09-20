@@ -84,14 +84,14 @@ Deno.serve(async (req) => {
     let contact: any = null;
     if (slug) {
       const r = await supabase
-        .from("contacts").select("id, connection_status, sn_lists, company_id")
+        .from("contacts").select("id, connection_status, sn_lists, company_id, cr_accepted_at")
         .eq("team_id", PIER_TEAM_ID).eq("linkedin_slug", slug).limit(1).maybeSingle();
       if (r.error) throw r.error;
       contact = r.data;
     }
     if (!contact) {
       const r = await supabase
-        .from("contacts").select("id, connection_status, sn_lists, company_id")
+        .from("contacts").select("id, connection_status, sn_lists, company_id, cr_accepted_at")
         .eq("team_id", PIER_TEAM_ID).eq("linkedin_url", linkedinUrl).limit(1).maybeSingle();
       if (r.error) throw r.error;
       contact = r.data;
@@ -121,10 +121,15 @@ Deno.serve(async (req) => {
     }
 
     // Flip to Accepted + stamp last_contacted (the acceptance date).
-    const today = new Date().toISOString().slice(0, 10);
+    // F16.5 (2026-09-20): this point is reached only on a genuine transition (the F15.4 guard above
+    // returned for Accepted / Already connected), so the same write stamps cr_accepted_at and
+    // attributes the status. A repeat report never gets here, so it never re-stamps; an earlier
+    // stamp (accepted, withdrawn, accepted again) is kept, never overwritten.
+    const nowIso = new Date().toISOString();
+    const today = nowIso.slice(0, 10);
     const { error: updErr } = await supabase
       .from("contacts")
-      .update({ connection_status: "Accepted", last_contacted: today, updated_at: new Date().toISOString() })
+      .update({ connection_status: "Accepted", cr_accepted_at: contact.cr_accepted_at ?? nowIso, connection_status_source: "phantom_recently_connected", last_contacted: today, updated_at: nowIso })
       .eq("id", contact.id)
       .eq("team_id", PIER_TEAM_ID);
     if (updErr) throw updErr;
