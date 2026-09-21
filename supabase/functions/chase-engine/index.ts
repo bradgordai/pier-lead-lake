@@ -1,29 +1,9 @@
-// Edge Function: chase-engine  (deployed v10, 2026-09-15. F16.1 per-section refusal maps + reconciles flag; F15.2 routing matrix; F14.4 first message flag; F13.4 chaser_drafted)
-// NOTE: the deployed bundle is a compacted equivalent of this file (a refusalRow helper replaces the three inline refusal inserts).
+// Edge Function: chase-engine  (F16.1 2026-09-15: per-section refusal maps + reconciles flag; F15.2 routing matrix; F14.4 first message flag; F13.4 chaser_drafted)
 //
 // Daily. Finds contacts due a chaser, evaluates every one through the C5 refusal gates,
 // drafts the survivors via generate-draft-from-context, and advances chase state.
-//
 // NOTHING IS EVER SENT FROM HERE. Every draft lands draft_status='pending_review'.
-//
-// C1 ROUTES AND CAPS (Oli's correction 3a, 2026-09-02):
-//   accepted_chase   connected already  -> FREE LinkedIn DM,  cap dm_chaser_cap  (3)
-//   cr_not_accepted  CR never accepted  -> LinkedIn inMail,   cap inmail_chaser_cap (1)
-//
-// The InMail cap of 1 is deliberate and expensive to get wrong: one initial InMail plus one
-// chaser is 2 credits per account, which reaches ~47 accounts per 95 credits against 31 at
-// three. Chasing an ALREADY-CONNECTED contact over InMail spends a credit for nothing -
-// that was the bug behind the 2026-09-03 06:15 quarantine, and the route split fixes it.
-//
-// Caps, routes and is_final all come from fn_chase_candidates (migration 056), which counts
-// sent chasers PER CHANNEL. Counting across channels would let a DM chaser eat the InMail
-// allowance.
-//
-// C5: every candidate goes through fn_evaluate_gates before any model call. A gate failure
-// is written to `refusals` and NOT drafted - a refusal is a first-class outcome, not an error.
-//
-// Auth: INTERNAL_APP_SECRET (internal class), verify_jwt=false.
-// Body (all optional): { "limit": 25, "dry_run": true }
+// Auth: INTERNAL_APP_SECRET (internal class), verify_jwt=false. Body (all optional): { "limit": 25, "dry_run": true }
 
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.45.4";
 import { authorize } from "./_shared/authorize.ts";
@@ -39,8 +19,6 @@ const supabase = createClient(SUPABASE_URL, SERVICE_ROLE_KEY, { auth: { persistS
 const json = (s: number, b: any) => new Response(JSON.stringify(b), { status: s, headers: { "content-type": "application/json" } });
 
 const DEFAULT_CAP_PER_RUN = 25;
-// Drafting is a ~6s model call. Sequential x25 would exceed the function timeout; a small
-// concurrency window keeps a full run inside it. Also keeps the prompt cache warm.
 const CONCURRENCY = 4;
 
 function addDays(d: Date, n: number): string {
@@ -63,6 +41,20 @@ type Candidate = {
   connection_status: string | null;
 };
 
+async function refusalRow(contactId: string, companyId: string | null, gate: { reason_code: string; reason_human: string; context?: unknown }, channel: string, requested: string, extra: Record<string, unknown>, today: Date): Promise<void> {
+  const since = new Date(today.getTime() - 24 * 3600 * 1000).toISOString();
+  const { data: dup } = await supabase.from("refusals").select("id")
+    .eq("team_id", PIER_TEAM_ID).eq("contact_id", contactId)
+    .eq("reason_code", gate.reason_code).gte("created_at", since).limit(1).maybeSingle();
+  if (dup) return;
+  await supabase.from("refusals").insert({
+    team_id: PIER_TEAM_ID, contact_id: contactId, company_id: companyId,
+    reason_code: gate.reason_code, reason_human: gate.reason_human,
+    channel, requested,
+    context: { ...((gate.context as Record<string, unknown>) ?? {}), source: "chase-engine", ...extra },
+  });
+}
+
 Deno.serve(async (req) => {
   if (req.method !== "POST") return json(405, { error: "method_not_allowed" });
   if (!PIER_TEAM_ID) return json(500, { error: "server_misconfigured", detail: "PIER_TEAM_ID not set" });
@@ -78,13 +70,8 @@ Deno.serve(async (req) => {
     const { data: settings } = await supabase.from("team_settings")
       .select("chase_interval_days, dm_chaser_cap, inmail_chaser_cap, cooldown_days, first_message_after_cr_enabled, first_message_cap_per_run, cold_inmail_openers_per_run, reply_sweep_per_run")
       .eq("team_id", PIER_TEAM_ID).maybeSingle();
-    // F14.4: first messages after CR accepted are drafted here ONLY when the team flag is on. A
-    // dry run may ask to preview them with { dry_run: true, include_first_messages: true }; that
-    // writes nothing, so it cannot change behaviour before Brad flips the flag.
     const firstMsgEnabled = settings?.first_message_after_cr_enabled === true || (dryRun && body?.include_first_messages === true);
     const firstMsgCap = Math.max(0, Math.min(50, Number(settings?.first_message_cap_per_run ?? 5)));
-    // F15.2: r1 cold InMail openers (not connected, never messaged) are drafted here under their own
-    // per-run cap; 0 switches them off. They are openers, never chasers, and never DMs.
     const coldCap = Math.max(0, Math.min(50, Number(settings?.cold_inmail_openers_per_run ?? 5)));
     const intervalDays = Number(settings?.chase_interval_days ?? 7);
     const dmCap = Number(settings?.dm_chaser_cap ?? 3);
@@ -94,41 +81,30 @@ Deno.serve(async (req) => {
     const today = new Date();
     const todayStr = today.toISOString().slice(0, 10);
 
-    // ---------------- 1. exhausted cadences: cooldown + register row, never another chaser
-    const { data: exhausted, error: exErr } = await supabase
-      .rpc("fn_chase_exhausted", { p_team_id: PIER_TEAM_ID, p_limit: 200 });
+    // ---------------- 1. exhausted cadences
+    const { data: exhausted, error: exErr } = await supabase.rpc("fn_chase_exhausted", { p_team_id: PIER_TEAM_ID, p_limit: 200 });
     if (exErr) throw exErr;
-
     let exhaustedHandled = 0;
     for (const e of (exhausted ?? []) as Array<{ contact_id: string; company_id: string | null }>) {
       if (dryRun) { exhaustedHandled++; continue; }
       const cooldownUntil = addDays(today, cooldownDays);
-      const { error: uErr } = await supabase.from("contacts").update({
-        chase_state: "exhausted", cooldown_until: cooldownUntil, chase_next_due_at: null,
-      }).eq("id", e.contact_id).eq("team_id", PIER_TEAM_ID);
+      const { error: uErr } = await supabase.from("contacts").update({ chase_state: "exhausted", cooldown_until: cooldownUntil, chase_next_due_at: null }).eq("id", e.contact_id).eq("team_id", PIER_TEAM_ID);
       if (uErr) { console.error(JSON.stringify({ event: "exhaust_update_failed", contact_id: e.contact_id, message: uErr.message })); continue; }
-
       const { error: regErr } = await supabase.from("outreach_log").insert({
-        team_id: PIER_TEAM_ID, touch_id: `chase-exhausted-${crypto.randomUUID()}`,
-        contact_id: e.contact_id, company_id: e.company_id ?? null,
-        // outreach_channel has no "Internal" member; "Other" is the only non-messaging one.
+        team_id: PIER_TEAM_ID, touch_id: `chase-exhausted-${crypto.randomUUID()}`, contact_id: e.contact_id, company_id: e.company_id ?? null,
         channel: "Other", touch_type: "Other",
         message_body: `Chase cadence closed with no reply. Contact placed in cooldown until ${cooldownUntil}. No further chasers will be drafted.`,
-        draft_status: "sent", send_status: "Sent", agent_produced: true,
-        migrated_legacy: false, touch_date: todayStr,
+        draft_status: "sent", send_status: "Sent", agent_produced: true, migrated_legacy: false, touch_date: todayStr,
       });
       if (regErr) console.error(JSON.stringify({ event: "register_row_failed", contact_id: e.contact_id, message: regErr.message }));
       exhaustedHandled++;
     }
 
     // ---------------- 2. due chasers
-    const { data: candidates, error: cErr } = await supabase
-      .rpc("fn_chase_candidates", { p_team_id: PIER_TEAM_ID, p_limit: limit });
+    const { data: candidates, error: cErr } = await supabase.rpc("fn_chase_candidates", { p_team_id: PIER_TEAM_ID, p_limit: limit });
     if (cErr) throw cErr;
     const list = (candidates ?? []) as Candidate[];
-
-    const { data: allDue } = await supabase
-      .rpc("fn_chase_candidates", { p_team_id: PIER_TEAM_ID, p_limit: 5000 });
+    const { data: allDue } = await supabase.rpc("fn_chase_candidates", { p_team_id: PIER_TEAM_ID, p_limit: 5000 });
     const backlog = ((allDue ?? []) as Candidate[]).length;
 
     const results: Array<Record<string, unknown>> = [];
@@ -139,219 +115,98 @@ Deno.serve(async (req) => {
     let drafted = 0, refused = 0, skipped = 0, failed = 0;
 
     async function handle(c: Candidate) {
-      // Second guard on the cap. fn_chase_candidates already excludes over-cap contacts;
-      // the cap is the one rule that must not fail open, so it is checked twice.
-      if (c.chaser_number > c.cap) {
-        skipped++;
-        results.push({ contact_id: c.contact_id, skipped: "over_cap", chaser_number: c.chaser_number, cap: c.cap, channel: c.channel });
-        return;
-      }
-
-      // C5 gates, evaluated on the channel this chaser would actually use.
-      const { data: gateRows, error: gErr } = await supabase.rpc("fn_evaluate_gates", {
-        p_team_id: PIER_TEAM_ID, p_contact_id: c.contact_id,
-        p_channel: c.channel, p_requested: "chaser",
-      });
+      if (c.chaser_number > c.cap) { skipped++; results.push({ contact_id: c.contact_id, skipped: "over_cap", chaser_number: c.chaser_number, cap: c.cap, channel: c.channel }); return; }
+      const { data: gateRows, error: gErr } = await supabase.rpc("fn_evaluate_gates", { p_team_id: PIER_TEAM_ID, p_contact_id: c.contact_id, p_channel: c.channel, p_requested: "chaser" });
       if (gErr) { failed++; results.push({ contact_id: c.contact_id, error: gErr.message }); return; }
       const gate = (gateRows ?? [])[0];
       if (gate) {
         refused++;
         refusedByCode[gate.reason_code] = (refusedByCode[gate.reason_code] ?? 0) + 1;
-        if (!dryRun) {
-          // One refusal row per contact + reason per day. The same 60-odd thread_text_missing
-          // contacts would otherwise add a row on every daily run and drown the queue view.
-          const since = new Date(today.getTime() - 24 * 3600 * 1000).toISOString();
-          const { data: dup } = await supabase.from("refusals").select("id")
-            .eq("team_id", PIER_TEAM_ID).eq("contact_id", c.contact_id)
-            .eq("reason_code", gate.reason_code).gte("created_at", since).limit(1).maybeSingle();
-          if (!dup) {
-            await supabase.from("refusals").insert({
-              team_id: PIER_TEAM_ID, contact_id: c.contact_id, company_id: c.company_id,
-              reason_code: gate.reason_code, reason_human: gate.reason_human,
-              channel: c.channel, requested: "chaser",
-              context: { ...(gate.context ?? {}), source: "chase-engine", route: c.route, chaser_number: c.chaser_number },
-            });
-          }
-        }
+        if (!dryRun) await refusalRow(c.contact_id, c.company_id, gate, c.channel, "chaser", { route: c.route, chaser_number: c.chaser_number }, today);
         results.push({ contact_id: c.contact_id, refused: gate.reason_code, channel: c.channel, route: c.route });
         return;
       }
-
       const trigger = `chaser_${c.chaser_number}`;
-      if (dryRun) {
-        drafted++;
-        results.push({ contact_id: c.contact_id, would_draft: trigger, route: c.route, channel: c.channel,
-                       cap: c.cap, is_final: c.is_final, priority: c.priority, days_since: c.days_since });
-        return;
-      }
+      if (dryRun) { drafted++; results.push({ contact_id: c.contact_id, would_draft: trigger, route: c.route, channel: c.channel, cap: c.cap, is_final: c.is_final, priority: c.priority, days_since: c.days_since }); return; }
       try {
         const resp = await fetch(`${SUPABASE_URL}/functions/v1/generate-draft-from-context`, {
-          method: "POST",
-          headers: { authorization: `Bearer ${INTERNAL_SECRET}`, "content-type": "application/json" },
-          // exit_shape marks the last chaser permitted on this route: no ask, leave the door
-          // open. On the DM route that is chaser 3 (whose intent is already exit-shaped);
-          // on the InMail route it is chaser 1, because the cap is 1.
+          method: "POST", headers: { authorization: `Bearer ${INTERNAL_SECRET}`, "content-type": "application/json" },
           body: JSON.stringify({ contact_id: c.contact_id, trigger_reason: trigger, exit_shape: c.is_final }),
         });
         const out = await resp.json().catch(() => ({}));
-
-        if (out?.refused) {
-          // The drafter re-evaluates the gates; if it refuses, it has already logged the row.
-          refused++;
-          refusedByCode[out.reason_code] = (refusedByCode[out.reason_code] ?? 0) + 1;
-          results.push({ contact_id: c.contact_id, refused: out.reason_code, via: "drafter" });
-          return;
-        }
-        if (out?.status === "budget_exceeded") {
-          failed++; results.push({ contact_id: c.contact_id, error: "budget_exceeded" });
-          return;
-        }
+        if (out?.refused) { refused++; refusedByCode[out.reason_code] = (refusedByCode[out.reason_code] ?? 0) + 1; results.push({ contact_id: c.contact_id, refused: out.reason_code, via: "drafter" }); return; }
+        if (out?.status === "budget_exceeded") { failed++; results.push({ contact_id: c.contact_id, error: "budget_exceeded" }); return; }
         if (out?.status === "created") {
           drafted++;
-          // chaser_count is NOT incremented here: it counts SENT chasers, and this draft has
-          // not been sent or even approved. F13.4 (2026-09-10): the state says so too:
-          // 'chaser_drafted' here, chaser_N_sent only when fn_apply_send_effects sees the send.
-          // F15.2: the drafter enforces the routing matrix and may have demoted the request to an
-          // Initial message; only a real chaser draft moves the chase state.
           const producedChaser = String(out?.touch_type ?? "").startsWith("Chaser ");
           if (producedChaser) {
-            await supabase.from("contacts").update({
-              chase_state: "chaser_drafted",
-              chase_last_outbound_at: c.last_outbound,
-              chase_next_due_at: addDays(today, intervalDays),
-            }).eq("id", c.contact_id).eq("team_id", PIER_TEAM_ID);
+            await supabase.from("contacts").update({ chase_state: "chaser_drafted", chase_last_outbound_at: c.last_outbound, chase_next_due_at: addDays(today, intervalDays) }).eq("id", c.contact_id).eq("team_id", PIER_TEAM_ID);
           } else {
             console.error(JSON.stringify({ event: "routing_mismatch", contact_id: c.contact_id, asked: trigger, produced: out?.touch_type }));
           }
-          results.push({ contact_id: c.contact_id, drafted: trigger, produced: out?.touch_type, touch_id: out.touch_id,
-                         route: c.route, channel: c.channel, is_final: c.is_final });
-        } else {
-          skipped++;
-          results.push({ contact_id: c.contact_id, skipped: out?.status ?? "unknown" });
-        }
-      } catch (e) {
-        failed++;
-        results.push({ contact_id: c.contact_id, error: (e as Error).message ?? String(e) });
-      }
+          results.push({ contact_id: c.contact_id, drafted: trigger, produced: out?.touch_type, touch_id: out.touch_id, route: c.route, channel: c.channel, is_final: c.is_final });
+        } else { skipped++; results.push({ contact_id: c.contact_id, skipped: out?.status ?? "unknown" }); }
+      } catch (e) { failed++; results.push({ contact_id: c.contact_id, error: (e as Error).message ?? String(e) }); }
     }
-
-    for (let i = 0; i < list.length; i += CONCURRENCY) {
-      await Promise.all(list.slice(i, i + CONCURRENCY).map(handle));
-    }
+    for (let i = 0; i < list.length; i += CONCURRENCY) await Promise.all(list.slice(i, i + CONCURRENCY).map(handle));
 
     // ---------------- 3. first message after CR accepted (flag-gated, F14.4)
-    // Accepted, never messaged, nothing pending. Requested as initial_message (NOT chaser): the
-    // gates run the deep-research and group checks, no chaser cap is touched, and the drafter's
-    // trigger is cr_accepted, the same one the Connection Watcher uses, so the type is
-    // "first message after CR accepted" (layer 4 voice once the draft stack is wired).
     let firstConsidered = 0, firstDrafted = 0, firstRefused = 0, firstFailed = 0;
     const firstResults: Array<Record<string, unknown>> = [];
     if (firstMsgEnabled && firstMsgCap > 0) {
-      const { data: firsts, error: fErr } = await supabase
-        .rpc("fn_first_message_candidates", { p_team_id: PIER_TEAM_ID, p_limit: firstMsgCap });
+      const { data: firsts, error: fErr } = await supabase.rpc("fn_first_message_candidates", { p_team_id: PIER_TEAM_ID, p_limit: firstMsgCap });
       if (fErr) console.error(JSON.stringify({ event: "first_message_candidates_failed", message: fErr.message }));
       for (const f of (firsts ?? []) as Array<{ contact_id: string; company_id: string | null; priority: string | null }>) {
         firstConsidered++;
-        const { data: gateRows, error: gErr } = await supabase.rpc("fn_evaluate_gates", {
-          p_team_id: PIER_TEAM_ID, p_contact_id: f.contact_id, p_channel: "LinkedIn DM", p_requested: "initial_message",
-        });
+        const { data: gateRows, error: gErr } = await supabase.rpc("fn_evaluate_gates", { p_team_id: PIER_TEAM_ID, p_contact_id: f.contact_id, p_channel: "LinkedIn DM", p_requested: "initial_message" });
         if (gErr) { firstFailed++; firstResults.push({ contact_id: f.contact_id, error: gErr.message }); continue; }
         const gate = (gateRows ?? [])[0];
         if (gate) {
-          firstRefused++;
-          firstRefusedByCode[gate.reason_code] = (firstRefusedByCode[gate.reason_code] ?? 0) + 1;
-          if (!dryRun) {
-            const since = new Date(today.getTime() - 24 * 3600 * 1000).toISOString();
-            const { data: dup } = await supabase.from("refusals").select("id")
-              .eq("team_id", PIER_TEAM_ID).eq("contact_id", f.contact_id)
-              .eq("reason_code", gate.reason_code).gte("created_at", since).limit(1).maybeSingle();
-            if (!dup) {
-              await supabase.from("refusals").insert({
-                team_id: PIER_TEAM_ID, contact_id: f.contact_id, company_id: f.company_id,
-                reason_code: gate.reason_code, reason_human: gate.reason_human,
-                channel: "LinkedIn DM", requested: "initial_message",
-                context: { ...(gate.context ?? {}), source: "chase-engine", route: "first_message_after_cr" },
-              });
-            }
-          }
+          firstRefused++; firstRefusedByCode[gate.reason_code] = (firstRefusedByCode[gate.reason_code] ?? 0) + 1;
+          if (!dryRun) await refusalRow(f.contact_id, f.company_id, gate, "LinkedIn DM", "initial_message", { route: "first_message_after_cr" }, today);
           firstResults.push({ contact_id: f.contact_id, refused: gate.reason_code, route: "first_message_after_cr" });
           continue;
         }
-        if (dryRun) {
-          firstDrafted++;
-          firstResults.push({ contact_id: f.contact_id, would_draft: "first_message_after_cr", priority: f.priority });
-          continue;
-        }
+        if (dryRun) { firstDrafted++; firstResults.push({ contact_id: f.contact_id, would_draft: "first_message_after_cr", priority: f.priority }); continue; }
         try {
-          const resp = await fetch(`${SUPABASE_URL}/functions/v1/generate-draft-from-context`, {
-            method: "POST",
-            headers: { authorization: `Bearer ${INTERNAL_SECRET}`, "content-type": "application/json" },
-            body: JSON.stringify({ contact_id: f.contact_id, trigger_reason: "cr_accepted" }),
-          });
+          const resp = await fetch(`${SUPABASE_URL}/functions/v1/generate-draft-from-context`, { method: "POST", headers: { authorization: `Bearer ${INTERNAL_SECRET}`, "content-type": "application/json" }, body: JSON.stringify({ contact_id: f.contact_id, trigger_reason: "cr_accepted" }) });
           const out = await resp.json().catch(() => ({}));
           if (out?.status === "created") { firstDrafted++; firstResults.push({ contact_id: f.contact_id, drafted: "first_message_after_cr", touch_id: out.touch_id }); }
           else if (out?.refused) { firstRefused++; firstRefusedByCode[out.reason_code] = (firstRefusedByCode[out.reason_code] ?? 0) + 1; firstResults.push({ contact_id: f.contact_id, refused: out.reason_code, via: "drafter" }); }
           else { firstFailed++; firstResults.push({ contact_id: f.contact_id, error: out?.status ?? out?.error ?? "unknown" }); }
-        } catch (e) {
-          firstFailed++; firstResults.push({ contact_id: f.contact_id, error: (e as Error).message ?? String(e) });
-        }
+        } catch (e) { firstFailed++; firstResults.push({ contact_id: f.contact_id, error: (e as Error).message ?? String(e) }); }
       }
     }
 
-    // ---------------- 4. r1 cold InMail openers (F15.2). Not connected, never messaged on any
-    // channel, company deep-researched, CR (if any) older than the chase interval. Requested as
-    // initial_message on LinkedIn inMail; the drafter's trigger is inmail_cold. Capped per run.
+    // ---------------- 4. r1 cold InMail openers (F15.2)
     let coldConsidered = 0, coldDrafted = 0, coldRefused = 0, coldFailed = 0;
     const coldResults: Array<Record<string, unknown>> = [];
     let coldBacklog = 0;
     if (coldCap > 0) {
       const { data: coldAll } = await supabase.rpc("fn_cold_inmail_candidates", { p_team_id: PIER_TEAM_ID, p_limit: 5000 });
       coldBacklog = ((coldAll ?? []) as unknown[]).length;
-      const { data: colds, error: kErr } = await supabase
-        .rpc("fn_cold_inmail_candidates", { p_team_id: PIER_TEAM_ID, p_limit: coldCap });
+      const { data: colds, error: kErr } = await supabase.rpc("fn_cold_inmail_candidates", { p_team_id: PIER_TEAM_ID, p_limit: coldCap });
       if (kErr) console.error(JSON.stringify({ event: "cold_inmail_candidates_failed", message: kErr.message }));
       for (const k of (colds ?? []) as Array<{ contact_id: string; company_id: string | null; priority: string | null; connection_status: string | null }>) {
         coldConsidered++;
         if (["Accepted", "Already connected"].includes(String(k.connection_status ?? ""))) { coldFailed++; coldResults.push({ contact_id: k.contact_id, error: "routing_invariant_violated: connected contact in cold InMail set" }); continue; }
-        const { data: gateRows, error: gErr } = await supabase.rpc("fn_evaluate_gates", {
-          p_team_id: PIER_TEAM_ID, p_contact_id: k.contact_id, p_channel: "LinkedIn inMail", p_requested: "initial_message",
-        });
+        const { data: gateRows, error: gErr } = await supabase.rpc("fn_evaluate_gates", { p_team_id: PIER_TEAM_ID, p_contact_id: k.contact_id, p_channel: "LinkedIn inMail", p_requested: "initial_message" });
         if (gErr) { coldFailed++; coldResults.push({ contact_id: k.contact_id, error: gErr.message }); continue; }
         const gate = (gateRows ?? [])[0];
         if (gate) {
-          coldRefused++;
-          coldRefusedByCode[gate.reason_code] = (coldRefusedByCode[gate.reason_code] ?? 0) + 1;
-          if (!dryRun) {
-            const since = new Date(today.getTime() - 24 * 3600 * 1000).toISOString();
-            const { data: dup } = await supabase.from("refusals").select("id")
-              .eq("team_id", PIER_TEAM_ID).eq("contact_id", k.contact_id)
-              .eq("reason_code", gate.reason_code).gte("created_at", since).limit(1).maybeSingle();
-            if (!dup) {
-              await supabase.from("refusals").insert({
-                team_id: PIER_TEAM_ID, contact_id: k.contact_id, company_id: k.company_id,
-                reason_code: gate.reason_code, reason_human: gate.reason_human,
-                channel: "LinkedIn inMail", requested: "initial_message",
-                context: { ...(gate.context ?? {}), source: "chase-engine", route: "cold_inmail_open" },
-              });
-            }
-          }
+          coldRefused++; coldRefusedByCode[gate.reason_code] = (coldRefusedByCode[gate.reason_code] ?? 0) + 1;
+          if (!dryRun) await refusalRow(k.contact_id, k.company_id, gate, "LinkedIn inMail", "initial_message", { route: "cold_inmail_open" }, today);
           coldResults.push({ contact_id: k.contact_id, refused: gate.reason_code, route: "cold_inmail_open" });
           continue;
         }
         if (dryRun) { coldDrafted++; coldResults.push({ contact_id: k.contact_id, would_draft: "inmail_cold", priority: k.priority }); continue; }
         try {
-          const resp = await fetch(`${SUPABASE_URL}/functions/v1/generate-draft-from-context`, {
-            method: "POST",
-            headers: { authorization: `Bearer ${INTERNAL_SECRET}`, "content-type": "application/json" },
-            body: JSON.stringify({ contact_id: k.contact_id, trigger_reason: "inmail_cold" }),
-          });
+          const resp = await fetch(`${SUPABASE_URL}/functions/v1/generate-draft-from-context`, { method: "POST", headers: { authorization: `Bearer ${INTERNAL_SECRET}`, "content-type": "application/json" }, body: JSON.stringify({ contact_id: k.contact_id, trigger_reason: "inmail_cold" }) });
           const out = await resp.json().catch(() => ({}));
           if (out?.status === "created") { coldDrafted++; coldResults.push({ contact_id: k.contact_id, drafted: "inmail_cold", produced: out?.touch_type, touch_id: out.touch_id }); }
           else if (out?.refused) { coldRefused++; coldRefusedByCode[out.reason_code] = (coldRefusedByCode[out.reason_code] ?? 0) + 1; coldResults.push({ contact_id: k.contact_id, refused: out.reason_code, via: "drafter" }); }
           else { coldFailed++; coldResults.push({ contact_id: k.contact_id, error: out?.status ?? out?.error ?? "unknown" }); }
-        } catch (e) {
-          coldFailed++; coldResults.push({ contact_id: k.contact_id, error: (e as Error).message ?? String(e) });
-        }
+        } catch (e) { coldFailed++; coldResults.push({ contact_id: k.contact_id, error: (e as Error).message ?? String(e) }); }
       }
     }
 
@@ -372,49 +227,29 @@ Deno.serve(async (req) => {
         replyConsidered++;
         const connected = ["Accepted", "Already connected"].includes(String(r.connection_status ?? ""));
         const channel = String(r.inbound_channel ?? "") === "Email" ? "Email" : connected ? "LinkedIn DM" : "LinkedIn inMail";
-        const { data: gateRows, error: gErr } = await supabase.rpc("fn_evaluate_gates", {
-          p_team_id: PIER_TEAM_ID, p_contact_id: r.contact_id, p_channel: channel, p_requested: "reply",
-        });
+        const { data: gateRows, error: gErr } = await supabase.rpc("fn_evaluate_gates", { p_team_id: PIER_TEAM_ID, p_contact_id: r.contact_id, p_channel: channel, p_requested: "reply" });
         if (gErr) { replyFailed++; replyResults.push({ contact_id: r.contact_id, error: gErr.message }); continue; }
         const gate = (gateRows ?? [])[0];
         if (gate) {
-          replyRefused++;
-          replyRefusedByCode[gate.reason_code] = (replyRefusedByCode[gate.reason_code] ?? 0) + 1;
-          if (!dryRun) {
-            const since = new Date(today.getTime() - 24 * 3600 * 1000).toISOString();
-            const { data: dup } = await supabase.from("refusals").select("id")
-              .eq("team_id", PIER_TEAM_ID).eq("contact_id", r.contact_id)
-              .eq("reason_code", gate.reason_code).gte("created_at", since).limit(1).maybeSingle();
-            if (!dup) {
-              await supabase.from("refusals").insert({
-                team_id: PIER_TEAM_ID, contact_id: r.contact_id, company_id: r.company_id,
-                reason_code: gate.reason_code, reason_human: gate.reason_human, channel, requested: "reply",
-                context: { ...(gate.context ?? {}), source: "chase-engine", route: "reply_sweep" },
-              });
-            }
-          }
+          replyRefused++; replyRefusedByCode[gate.reason_code] = (replyRefusedByCode[gate.reason_code] ?? 0) + 1;
+          if (!dryRun) await refusalRow(r.contact_id, r.company_id, gate, channel, "reply", { route: "reply_sweep" }, today);
           replyResults.push({ contact_id: r.contact_id, refused: gate.reason_code, route: "reply_sweep" });
           continue;
         }
         if (dryRun) { replyDrafted++; replyResults.push({ contact_id: r.contact_id, would_draft: "follow_up", channel }); continue; }
         try {
-          const resp = await fetch(`${SUPABASE_URL}/functions/v1/generate-draft-from-context`, {
-            method: "POST",
-            headers: { authorization: `Bearer ${INTERNAL_SECRET}`, "content-type": "application/json" },
-            body: JSON.stringify({ contact_id: r.contact_id, trigger_reason: "follow_up" }),
-          });
+          const resp = await fetch(`${SUPABASE_URL}/functions/v1/generate-draft-from-context`, { method: "POST", headers: { authorization: `Bearer ${INTERNAL_SECRET}`, "content-type": "application/json" }, body: JSON.stringify({ contact_id: r.contact_id, trigger_reason: "follow_up" }) });
           const out = await resp.json().catch(() => ({}));
           if (out?.status === "created") { replyDrafted++; replyResults.push({ contact_id: r.contact_id, drafted: "follow_up", produced: out?.touch_type, channel: out?.channel, touch_id: out.touch_id }); }
           else if (out?.refused) { replyRefused++; replyRefusedByCode[out.reason_code] = (replyRefusedByCode[out.reason_code] ?? 0) + 1; replyResults.push({ contact_id: r.contact_id, refused: out.reason_code, via: "drafter" }); }
           else { replyFailed++; replyResults.push({ contact_id: r.contact_id, error: out?.status ?? out?.error ?? "unknown" }); }
-        } catch (e) {
-          replyFailed++; replyResults.push({ contact_id: r.contact_id, error: (e as Error).message ?? String(e) });
-        }
+        } catch (e) { replyFailed++; replyResults.push({ contact_id: r.contact_id, error: (e as Error).message ?? String(e) }); }
       }
     }
 
     const byRoute: Record<string, number> = {};
     for (const c of list) byRoute[`${c.route} (${c.channel}, cap ${c.cap})`] = (byRoute[`${c.route} (${c.channel}, cap ${c.cap})`] ?? 0) + 1;
+    const sum = (m: Record<string, number>) => Object.values(m).reduce((x, y) => x + y, 0);
 
     const summary = {
       status: dryRun ? "dry_run" : "ok",
@@ -430,15 +265,11 @@ Deno.serve(async (req) => {
       cold_inmail_openers: { cap_per_run: coldCap, backlog: coldBacklog, considered: coldConsidered, drafted: coldDrafted, refused: coldRefused, failed: coldFailed, refused_by_reason_code: coldRefusedByCode, results: coldResults },
       reply_sweep: { cap_per_run: replyCap, backlog: replyBacklog, considered: replyConsidered, drafted: replyDrafted, refused: replyRefused, failed: replyFailed, refused_by_reason_code: replyRefusedByCode, results: replyResults },
       first_message_after_cr: { enabled: firstMsgEnabled, cap_per_run: firstMsgCap, considered: firstConsidered, drafted: firstDrafted, refused: firstRefused, failed: firstFailed, refused_by_reason_code: firstRefusedByCode, results: firstResults },
-      // F16.1(c): every section's reason-code total must equal its refused count; the run is flagged if not.
-      reconciles: Object.values(refusedByCode).reduce((x, y) => x + y, 0) === refused
-        && Object.values(coldRefusedByCode).reduce((x, y) => x + y, 0) === coldRefused
-        && Object.values(firstRefusedByCode).reduce((x, y) => x + y, 0) === firstRefused
-        && Object.values(replyRefusedByCode).reduce((x, y) => x + y, 0) === replyRefused
-        && drafted + refused + skipped + failed === list.length,
+      // F16.1(c): every section's reason-code total equals its refused count, and the chaser section adds up to considered.
+      reconciles: sum(refusedByCode) === refused && sum(coldRefusedByCode) === coldRefused && sum(firstRefusedByCode) === firstRefused && sum(replyRefusedByCode) === replyRefused && drafted + refused + skipped + failed === list.length,
       results,
     };
-    console.log(JSON.stringify({ event: "chase_engine_run", ...summary, results: undefined }));
+    console.log(JSON.stringify({ event: "chase_engine_run", ...summary, results: undefined, cold_inmail_openers: { ...summary.cold_inmail_openers, results: undefined }, reply_sweep: { ...summary.reply_sweep, results: undefined }, first_message_after_cr: { ...summary.first_message_after_cr, results: undefined } }));
     return json(200, summary);
   } catch (e) {
     console.error(JSON.stringify({ event: "handler_error", message: (e as Error).message ?? String(e) }));

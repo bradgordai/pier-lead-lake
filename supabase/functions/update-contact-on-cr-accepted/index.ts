@@ -1,50 +1,37 @@
-// Edge Function: update-contact-on-cr-accepted  (F14.2 2026-09-14: heartbeat; F15.4 2026-09-15: transition-only, drafts the first message immediately per matrix r4)
+// Edge Function: update-contact-on-cr-accepted  (F14.2 2026-09-14: heartbeat; F15.4 2026-09-15: event-driven, transition-only)
 //
 // Called by Make.com after the "Recently Connected" phantom fires, once per newly
 // accepted LinkedIn connection. Flow: verify shared secret -> look up the contact
 // (by canonical linkedin_slug first, then linkedin_url) within the team -> if it's a
-// Pier lead (has a Sales Nav list) flip connection_status to 'Accepted' and stamp
-// last_contacted, then best-effort chain generate-draft-from-context; otherwise ignore.
+// Pier lead (has a Sales Nav list) and is NOT already Accepted, flip connection_status to
+// 'Accepted', stamp last_contacted (the acceptance date), refund the InMail credit and
+// draft the first message immediately (matrix r4: Initial message / LinkedIn DM, through
+// fn_evaluate_gates inside the drafter). Otherwise ignore.
 //
-// URL handling (migration 031): the Sales Nav import stored /sales/lead/ in linkedin_url
-// but the canonical /in/{slug} in linkedin_slug; the Recently Connected phantom emits a
-// public /in/{slug} URL. So we extract the slug from the incoming profileUrl and match on
-// linkedin_slug first, falling back to linkedin_url for rows that stored a /in/ URL directly.
+// F15.4: the phantom reports the same acceptance on every run, so before this the watcher
+// re-stamped last_contacted every day and re-asked for a draft every day (27 re-stamps on
+// 15 Sep). Now only a real transition to Accepted does anything; a repeat is logged and ignored.
 //
-// Security / conventions (mirrors upsert-contact-from-sales-nav):
-//   - service_role is used ONLY to construct the Supabase client at boot (below).
-//     Every query is explicitly scoped to PIER_TEAM_ID because service_role bypasses RLS.
-//   - Custom auth: callers present `Authorization: Bearer <INBOUND_WEBHOOK_SECRET>`.
-//     The legacy MAKE_SHARED_SECRET is still accepted during the transition and logs
-//     `deprecated_secret_used` when it is what worked.
-//     Deployed with verify_jwt=false so this Bearer reaches the handler.
-//   - DB errors are caught and returned as 500; the function never throws to the runtime.
-//   - The connection_status flip is an UPDATE on contacts, so the existing
-//     fn_audit_entity trigger records an "Updated <name>" audit_log row automatically.
+// Auth: INBOUND_WEBHOOK_SECRET (inbound class), verify_jwt=false. service_role client at boot,
+// every query scoped to PIER_TEAM_ID.
 
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.45.4";
 import { authorize } from "./_shared/authorize.ts";
 
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL") ?? "";
 const SERVICE_ROLE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") ?? "";
-// Outbound bearer for the chained call to generate-draft-from-context. Prefers the scoped
-// internal secret; falls back to the legacy one so the chain keeps working mid-transition.
 const OUTBOUND_SECRET = Deno.env.get("INTERNAL_APP_SECRET") || Deno.env.get("MAKE_SHARED_SECRET") || "";
 const PIER_TEAM_ID = Deno.env.get("PIER_TEAM_ID") ?? "";
 
-// service_role client — constructed once at boot; only used via the client API.
 const supabase = createClient(SUPABASE_URL, SERVICE_ROLE_KEY, {
   auth: { persistSession: false, autoRefreshToken: false },
 });
-// F14.2 (2026-09-14): automation heartbeat. Every authorised, well-formed call stamps
-// automation_heartbeat.connection_watcher; a handler error stamps a failure. Silence beyond 12 hours raises on Today.
 async function heartbeat(rows: number, ok = true, err?: string): Promise<void> {
   try {
     const { error } = await supabase.rpc("fn_heartbeat", { p_source: "connection_watcher", p_rows: rows, p_ok: ok, p_error: err ?? null });
     if (error) console.error(JSON.stringify({ event: "heartbeat_failed", source: "connection_watcher", message: error.message }));
   } catch (e) { console.error(JSON.stringify({ event: "heartbeat_failed", source: "connection_watcher", message: (e as Error).message })); }
 }
-
 
 // deno-lint-ignore no-explicit-any
 const json = (status: number, body: any) =>
@@ -53,7 +40,6 @@ const json = (status: number, body: any) =>
 function normalizeUrl(u: string): string {
   return (u ?? "").trim().replace(/\/+$/, "");
 }
-// Canonical LinkedIn slug from a public /in/{slug} URL (matches migration 031's regex).
 function extractSlug(url: string): string | null {
   const m = /linkedin\.com\/in\/([^/?#]+)/i.exec(url ?? "");
   return m ? m[1] : null;
@@ -61,10 +47,7 @@ function extractSlug(url: string): string | null {
 
 Deno.serve(async (req) => {
   if (req.method !== "POST") return json(405, { error: "method_not_allowed" });
-
   if (!PIER_TEAM_ID) return json(500, { error: "server_misconfigured", detail: "PIER_TEAM_ID not set" });
-
-  // Scoped-secret auth (security audit CRITICAL 2).
   if (!authorize(req, "inbound", "update-contact-on-cr-accepted")) return json(401, { error: "unauthorized" });
 
   // deno-lint-ignore no-explicit-any
@@ -75,11 +58,9 @@ Deno.serve(async (req) => {
   const profileUrl = String(body?.profileUrl ?? "").trim();
   if (!profileUrl) return json(400, { error: "missing_required_fields", detail: "profileUrl is required" });
   const linkedinUrl = normalizeUrl(profileUrl);
-  const slug = extractSlug(profileUrl); // Recently Connected always emits /in/ format
+  const slug = extractSlug(profileUrl);
 
   try {
-    // Look up the contact within the team: canonical slug first, then linkedin_url
-    // (backward compatible for rows that stored a /in/ URL directly).
     // deno-lint-ignore no-explicit-any
     let contact: any = null;
     if (slug) {
@@ -97,22 +78,18 @@ Deno.serve(async (req) => {
       contact = r.data;
     }
 
-    // Not a Pier lead (could be a personal CR) — ignore.
     if (!contact) {
       console.log(JSON.stringify({ event: "ignored", reason: "not_in_pier_pipeline", slug, url: linkedinUrl }));
       return json(200, { status: "ignored", reason: "not_in_pier_pipeline" });
     }
 
-    // Must have come from a Sales Nav list to count as a Pier target.
     const lists = Array.isArray(contact.sn_lists) ? contact.sn_lists : [];
     if (lists.length === 0) {
       console.log(JSON.stringify({ event: "ignored", reason: "no_sales_nav_source", contact_id: contact.id }));
       return json(200, { status: "ignored", reason: "no_sales_nav_source" });
     }
 
-    // F15.4 (2026-09-15): a repeat report of an acceptance already recorded is not an event. The
-    // phantom reports the same acceptance on every run, so before this the watcher re-stamped
-    // last_contacted daily and re-asked for a draft daily (27 re-stamps on 15 Sep). Nothing is
+    // F15.4: a repeat report of an acceptance already recorded is not an event. Nothing is
     // re-stamped and nothing is re-drafted; the pending draft (if any) already exists.
     const previousStatus = String(contact.connection_status ?? "");
     if (previousStatus === "Accepted" || previousStatus === "Already connected") {
@@ -120,7 +97,6 @@ Deno.serve(async (req) => {
       return json(200, { status: "ignored", reason: "already_accepted", contact_id: contact.id, previous_status: previousStatus });
     }
 
-    // Flip to Accepted + stamp last_contacted (the acceptance date).
     // F16.5 (2026-09-20): this point is reached only on a genuine transition (the F15.4 guard above
     // returned for Accepted / Already connected), so the same write stamps cr_accepted_at and
     // attributes the status. A repeat report never gets here, so it never re-stamps; an earlier
@@ -136,9 +112,6 @@ Deno.serve(async (req) => {
 
     console.log(JSON.stringify({ event: "connection_accepted", contact_id: contact.id, previous_status: previousStatus }));
 
-    // F1 (2026-09-07): LinkedIn refunds an InMail credit when the recipient accepts. The SQL
-    // function refunds once per contact and only if the CR route actually used InMail
-    // (a Sent LinkedIn inMail row exists); otherwise it is a no-op.
     let inmailRefund: number | null = null;
     try {
       const { data: bal, error: lErr } = await supabase.rpc("fn_ledger_inmail_accept_refund", { p_contact_id: contact.id, p_user_id: null });
@@ -148,8 +121,8 @@ Deno.serve(async (req) => {
       console.error(JSON.stringify({ event: "inmail_refund_failed", contact_id: contact.id, message: (e as Error).message }));
     }
 
-    // Chain into generate-draft-from-context. The connection flip is the primary success;
-    // draft generation is best-effort and never fails the request.
+    // Matrix r4: first message after CR accepted, drafted NOW. The drafter routes it (DM, Initial
+    // message, or a chaser if a DM already went out), runs fn_evaluate_gates, and dedupes.
     let draft: unknown = null;
     try {
       const draftResp = await fetch(`${SUPABASE_URL}/functions/v1/generate-draft-from-context`, {
@@ -158,7 +131,7 @@ Deno.serve(async (req) => {
         body: JSON.stringify({ contact_id: contact.id, trigger_reason: "cr_accepted" }),
       });
       draft = await draftResp.json().catch(() => ({ ok: false, http: draftResp.status }));
-      console.log(JSON.stringify({ event: "draft_triggered", http: draftResp.status }));
+      console.log(JSON.stringify({ event: "draft_triggered", http: draftResp.status, contact_id: contact.id }));
     } catch (e) {
       console.error(JSON.stringify({ event: "draft_trigger_failed", message: (e as Error).message ?? String(e) }));
       draft = { error: "draft_trigger_failed" };

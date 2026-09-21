@@ -77,4 +77,13 @@ order cannot be told. None can be drafted by the sweep. The "Needs review" scree
 Lovable, so the queue has no screen: a defect until F19.9(a) ships.
 
 ## Deploy result for chase-engine
-(appended when the port-and-deploy agent reports)
+**chase-engine v11 -> v12** (ezbr dcdb27c8…), reply sweep LIVE. Live v11 was taken as the base so nothing
+production had is lost (its `refusalRow` / `sum` helpers and the log line that strips nested `results`); the
+reply sweep was re-applied on top using those helpers. Live-vs-merged diff: 41 lines added, 3 changed, all
+of it the sweep. **update-contact-on-cr-accepted v19 -> v20** (ezbr e6557abc…): stamps cr_accepted_at and
+connection_status_source on a GENUINE transition only; the F15.4 guard is byte-identical and still returns
+before the only write. Both verified by byte comparison of the deployed files against the repo (`cmp`), from
+the raw tool output, not by transcription. Neither function was called.
+The sweep first runs at 06:15 UTC tomorrow. Its candidate set today is 5 contacts, of which Plater now has a
+draft, so it will find 4, all stopped by the deep-research gate: expect 0 drafts and up to 4 refusals with
+requested='reply'. That is the gate working, not the sweep failing.
