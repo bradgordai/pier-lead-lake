@@ -489,7 +489,7 @@ Deno.serve(async (req) => {
       researchNote = isReplyDraftEarly
         ? `COMPANY NOT DEEP RESEARCHED (${company?.research_stage ?? "no company linked"}): this reply was written from the conversation only, not from company knowledge.`
         : `COMPANY NOT DEEP RESEARCHED (${company?.research_stage ?? "no company linked"}): this draft was written without company research, so its hook is generic. Check it before sending.`;
-      console.warn(JSON.stringify({ event: "reply_without_research", contact_id: contact.id, research_stage: company.research_stage ?? null }));
+      console.warn(JSON.stringify({ event: "draft_without_research", contact_id: contact.id, requested, research_stage: company?.research_stage ?? null }));
     }
     if (company?.archived_at) {
       // F16.4 (2026-09-20): an archived company is a scope refusal, not a consent event, so it has its
