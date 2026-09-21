@@ -76,3 +76,25 @@ about display and counters, not model context. List screens already paginate wit
   that said "48-hex" was wrong, and tests/no_static_bearer_test.py would have MISSED it. Test widened to
   40-128 hex today.
 - RLS audit (F19.A(e)): not needed, Lovable touched no schema; its activity shows file edits only.
+
+**Update after Brad signed in to the preview:** Today renders on 7dc76a45 with no console errors. Edge
+Function auth by user token is still UNPROVEN: no `jwt_authorized` event in the function logs in the last
+24 h, because nobody has pressed an action button yet, and Chrome here is read-only so I will not press one.
+
+### 2. F19.1(d) Today replies — SHIPPED AND RENDERED
+Lovable commit **ed21cc6a7db5244dfa61302250556fd8221571dc** (before: 7dc76a45). One component changed,
+`RepliesNeedingAnswer.tsx`. Verified in Chrome (preview, Brad's admin scope): ONE list, header count 22,
+"migrated" badge on the non-live rows, no "Migrated history" toggle, longest waiting first (Jensen 138 d,
+Brunner 137, Torsting 136, Popescu 133, Plater 133 …). Before: 2 shown, 20 collapsed. The preview lags a
+commit by about a minute; the first two reloads still showed the old build.
+Not verifiable from SQL: the view is owner-scoped and returns 0 to the service role, so the count was read
+off the screen, not the database.
+FLAGS, not fixed: (1) Morten Jensen's row shows Oliver's OWN message as the reply text ("…All the best,
+Oliver"): an outbound logged as a Reply. (2) The list is 22, not the 6 the F16.3 report measured on 15 Sep;
+most of the extra rows sit at companies promoted to Monday, which F19.6 routes to the review queue.
+
+### CHECKPOINT F19.1(h)
+Shipped and rendered: (c) security swap 7dc76a45, (d) Today replies ed21cc6a. Lovable has advanced 3 commits
+(plan file, swap, replies). Left in the backlog: (e) Approve UI, (f) Improvement Log tab, then the chaser
+footer (merged into F19.5c), the queued-send status (F19.3e), company_archived label and the conflict view
+(F19.9). Total 8, not more than 8, so continuing.
