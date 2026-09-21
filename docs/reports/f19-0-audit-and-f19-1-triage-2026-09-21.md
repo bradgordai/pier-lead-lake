@@ -98,3 +98,35 @@ Shipped and rendered: (c) security swap 7dc76a45, (d) Today replies ed21cc6a. Lo
 (plan file, swap, replies). Left in the backlog: (e) Approve UI, (f) Improvement Log tab, then the chaser
 footer (merged into F19.5c), the queued-send status (F19.3e), company_archived label and the conflict view
 (F19.9). Total 8, not more than 8, so continuing.
+
+### 3. F19.1(e) Approve UI — SHIPPED, RENDERED, BEHAVIOUR NOT EXERCISED
+Lovable commit **639e4f4a7a75e1b07246a4d2fc1110929bb0a359** (before: ed21cc6a). Files: `revisionSnapshot.ts`
+(revision_number left out of the insert; the unchanged-text skip kept) and `DraftEditor.tsx` (Approve,
+Reject, Save and Send now wait for any in-flight silent save; one write per click; all four buttons plus
+"Approve anyway" disabled while busy; exactly one toast per click). Clause 3 of the old prompt was dropped
+as already true. Database side is compatible: the BEFORE INSERT trigger from migration 110 fills
+revision_number before the NOT NULL check. Verified in Chrome: Outreach and a DM chaser draft pane render,
+no console errors. NOT verified: the Approve click itself, because I may not approve anything.
+
+### 4. F19.1(f) Improvement Log tab — SHIPPED AND RENDERED
+Plan Mode first. Plan commit 902722d1. One correction made before approval: Lovable proposed 50 rows with
+"Load more", which would orphan nested items across pages; changed to ranged pages of 200 against an exact
+count, grouped over the full set. **Lovable commit 1dbc501a79bd6455a9d8bf5a8734b59d7b9c9729** (before:
+639e4f4a). New route /improvements, 9 new files, one sidebar entry after Insights.
+Verified in Chrome: header reads "109 items, 8 done"; Build wave 0 (4) and Build wave 1 (24) groups; nested
+children under i031; priority/owner/category/status filters, search, Show hidden, Expand/Collapse all, Add
+item; Activity panel shows the 2 imported entries; contact chips on i100 and i094. No console errors.
+F19.A(e) audit: Lovable used read-only queries only. pg_policies on the three tables are unchanged from
+F18.5 (team read; insert/update gated on fn_improvement_log_can_edit; no delete on improvements; no anon
+grants). Latest migration is still 120. Counts unchanged: 109 / 34 / 2.
+Realtime: the three tables are NOT in supabase_realtime. Lovable did not report missing events, so no
+follow-up migration was applied; two people editing at once will need a refresh to see each other.
+NOT verified: a write by Oliver, and Jack's read-only experience (needs their sessions).
+The send_message call for this build timed out on my side after the message was accepted; it was NOT
+re-sent; the result was read back with get_message.
+
+### NOT PUBLISHED
+Every Lovable change above is in the project and its PREVIEW. Lovable ends each build with "Publish your
+app". Oliver works in the published app, so none of this reaches him until someone presses Publish. I have
+not published: it is a public deployment and the token-auth change has not yet been proven by a real call.
+Lovable has advanced 6 commits today (09bd77f9 -> 1dbc501a): 2 plan files and 4 changes.
