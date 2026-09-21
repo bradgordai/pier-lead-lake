@@ -287,6 +287,9 @@ Deno.serve(async (req) => {
       return json(200, { status: "queued", send_after: slot?.not_before, queue_position: slot?.queue_position, channel, test_mode: TEST_MODE });
     }
 
+    // F19.3: the queue is held from BEFORE the launch call, so nothing else can start while PhantomBuster is
+    // being asked to run. The callback (or the 10 minute dead-man's switch) releases it.
+    await supabase.from("send_queue").update({ status: "launched", launched_at: new Date().toISOString() }).eq("outreach_log_id", rowId);
     console.log(JSON.stringify({ event: "launching", id: rowId, agent_id: agentId, channel, recipient: recipientUrl, test_mode: TEST_MODE, msg_len: messageText.length }));
 
     let containerId = "";
@@ -321,7 +324,26 @@ Deno.serve(async (req) => {
                 sent_body: messageText || null })
       .eq("id", rowId).eq("team_id", PIER_TEAM_ID);
     if (uErr) throw uErr;
-    await supabase.from("send_queue").update({ status: "launched", launched_at: new Date().toISOString() }).eq("outreach_log_id", rowId);
+    // F19.3(b): close the race from this side too. If PhantomBuster's callback beat the write above, it was
+    // parked. Replay it now through the callback itself, so there is still exactly one place that decides Sent
+    // or Cancelled. Best effort and loud: a failure here leaves the 10 minute dead-man's switch as the net.
+    try {
+      const { data: parked } = await supabase.from("send_callback_orphans").select("container_id, payload")
+        .eq("team_id", PIER_TEAM_ID).eq("container_id", containerId).is("resolved_at", null).maybeSingle();
+      if (parked) {
+        const inbound = Deno.env.get("INBOUND_WEBHOOK_SECRET") ?? "";
+        const rr = await fetch(`${SUPABASE_URL}/functions/v1/send-approved-callback`, {
+          method: "POST", headers: { authorization: `Bearer ${inbound}`, "content-type": "application/json" },
+          body: JSON.stringify(parked.payload),
+        });
+        const ro = await rr.json().catch(() => ({}));
+        await supabase.from("send_callback_orphans").update({ resolved_at: new Date().toISOString(), resolution: String(ro?.status ?? rr.status) })
+          .eq("container_id", containerId);
+        console.warn(JSON.stringify({ event: "parked_callback_replayed", id: rowId, phantom_run_id: containerId, result: ro?.status ?? rr.status }));
+      }
+    } catch (e) {
+      console.error(JSON.stringify({ event: "parked_callback_replay_failed", id: rowId, phantom_run_id: containerId, message: (e as Error).message ?? String(e) }));
+    }
 
     // F1 (2026-09-07): an InMail costs a credit the moment it is dispatched. The ledger
     // function is idempotent per row, so a retried launch cannot double-charge. The

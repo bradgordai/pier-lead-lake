@@ -1,3 +1,6 @@
+// F19 (2026-09-21): idempotent on phantom_run_id; an unmatched callback is retried then PARKED for replay; the
+// send queue is released by the terminal write here, not by a timer. Native PhantomBuster payloads carry the
+// same field names Make forwards (containerId, agentId, exitCode, exitMessage, resultObject as a JSON string).
 // Edge Function: send-approved-callback  (F13 2026-09-10: calls fn_apply_send_effects on a real send)
 //
 // Terminal state for a send. Called by the Make scenario "Pier Send Callback", which both
@@ -149,13 +152,39 @@ Deno.serve(async (req) => {
   const results = toArray(body?.resultObject);
 
   try {
-    const { data: row, error: fErr } = await supabase.from("outreach_log")
+    const { data: row0, error: fErr } = await supabase.from("outreach_log")
       .select("id, contact_ref, send_status, draft_status, sent_body, message_body")
       .eq("team_id", PIER_TEAM_ID).eq("phantom_run_id", runId).limit(1).maybeSingle();
     if (fErr) throw fErr;
-    if (!row) {
-      console.log(JSON.stringify({ event: "orphan_callback", run_id: runId }));
-      return json(200, { status: "orphan", reason: "no_outreach_log_row_for_run" });
+    // F19.3(b)(c): THE RACE. The dispatcher can only store phantom_run_id AFTER PhantomBuster's launch call
+    // returns (the id IS that call's response), and a no-op container has finished in 4 seconds. A callback
+    // that arrives first used to be logged as an orphan and dropped, leaving the row at Scheduled for ever.
+    // Now: look again for a few seconds; if the row still is not there, PARK the payload. The dispatcher
+    // replays a parked callback the moment it has written the run id. An orphan is a defect, never a no-op.
+    let found = row0 ?? null;
+    for (let i = 0; !found && i < 4; i++) {
+      await new Promise((r) => setTimeout(r, 2000));
+      const { data: again } = await supabase.from("outreach_log")
+        .select("id, contact_ref, send_status, draft_status, sent_body, message_body")
+        .eq("team_id", PIER_TEAM_ID).eq("phantom_run_id", runId).limit(1).maybeSingle();
+      found = again ?? null;
+    }
+    if (!found) {
+      const { error: pErr } = await supabase.from("send_callback_orphans").upsert({
+        team_id: PIER_TEAM_ID, container_id: runId, payload: body, received_at: new Date().toISOString(), resolved_at: null, resolution: null,
+      }, { onConflict: "container_id" });
+      console.error(JSON.stringify({ event: "orphan_callback_parked", run_id: runId, parked: !pErr, message: pErr?.message ?? null }));
+      return json(200, { status: "orphan_parked", reason: "no_outreach_log_row_for_run", parked: !pErr });
+    }
+    const row = found;
+
+    // F19.2(c): IDEMPOTENT ON phantom_run_id. With PhantomBuster calling directly AND Make left on as a
+    // fallback, the same run can report twice. A row that is already terminal is never written again: a
+    // second callback must not move sent_at_actual, re-run the send effects, or (if its payload differs)
+    // turn a real send into Cancelled and refund its InMail credit.
+    if (["Sent", "Cancelled"].includes(String(row.send_status))) {
+      console.log(JSON.stringify({ event: "callback_duplicate_ignored", id: row.id, run_id: runId, send_status: row.send_status }));
+      return json(200, { status: "already_terminal", outreach_log_id: row.id, phantom_run_id: runId, send_status: row.send_status });
     }
 
     // --- Non-zero exit: the run itself failed ---
@@ -166,6 +195,7 @@ Deno.serve(async (req) => {
         .eq("id", row.id).eq("team_id", PIER_TEAM_ID);
       if (uErr) throw uErr;
       await reverseInmailCharge(row.id, err);
+      await supabase.from("send_queue").update({ status: "failed", finished_at: new Date().toISOString(), detail: "callback: not delivered" }).eq("outreach_log_id", row.id).in("status", ["launched", "stuck"]);
       await logAudit("send_failed", row.id, `Send failed: ${err}`.slice(0, 300), { phantom_run_id: runId, exit_code: exitCodeRaw, exit_message: exitMessage });
       console.error(JSON.stringify({ event: "send_failed", id: row.id, run_id: runId, exit_code: exitCodeRaw }));
       return json(200, { status: "send_failed", outreach_log_id: row.id, phantom_run_id: runId, error: err });
@@ -180,6 +210,7 @@ Deno.serve(async (req) => {
         .eq("id", row.id).eq("team_id", PIER_TEAM_ID);
       if (uErr) throw uErr;
       await reverseInmailCharge(row.id, "phantom_skipped_duplicate_or_empty");
+      await supabase.from("send_queue").update({ status: "failed", finished_at: new Date().toISOString(), detail: "callback: not delivered" }).eq("outreach_log_id", row.id).in("status", ["launched", "stuck"]);
       await logAudit("send_skipped", row.id, "LinkedIn skipped this send (already messaged recently, or empty input). Draft left in Approved.", { phantom_run_id: runId, exit_code: 0, exit_message: exitMessage });
       console.warn(JSON.stringify({ event: "send_skipped", id: row.id, run_id: runId }));
       return json(200, { status: "send_skipped", outreach_log_id: row.id, phantom_run_id: runId, reason: "phantom_skipped_duplicate_or_empty" });
@@ -196,6 +227,7 @@ Deno.serve(async (req) => {
                 sent_body: confirmedBody })
       .eq("id", row.id).eq("team_id", PIER_TEAM_ID);
     if (uErr) throw uErr;
+    await supabase.from("send_queue").update({ status: "done", finished_at: new Date().toISOString() }).eq("outreach_log_id", row.id).in("status", ["launched", "stuck"]);
     // F13 (2026-09-10): the consequences of a real send live in ONE place, fn_apply_send_effects:
     // touch_date = the London date it went out (F13.1), chase cooldown cleared + clock restarted
     // (F13.2), contact moved to Contacted unless further along (F13.3), chaser_N_sent (F13.4).
