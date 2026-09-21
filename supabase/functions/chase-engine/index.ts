@@ -68,7 +68,7 @@ Deno.serve(async (req) => {
 
   try {
     const { data: settings } = await supabase.from("team_settings")
-      .select("chase_interval_days, dm_chaser_cap, inmail_chaser_cap, cooldown_days, first_message_after_cr_enabled, first_message_cap_per_run, cold_inmail_openers_per_run, reply_sweep_per_run")
+      .select("chase_interval_days, dm_chaser_cap, inmail_chaser_cap, cooldown_days, first_message_after_cr_enabled, first_message_cap_per_run, cold_inmail_openers_per_run, reply_sweep_per_run, max_drafts_per_run")
       .eq("team_id", PIER_TEAM_ID).maybeSingle();
     const firstMsgEnabled = settings?.first_message_after_cr_enabled === true || (dryRun && body?.include_first_messages === true);
     const firstMsgCap = Math.max(0, Math.min(50, Number(settings?.first_message_cap_per_run ?? 5)));
@@ -77,6 +77,12 @@ Deno.serve(async (req) => {
     const dmCap = Number(settings?.dm_chaser_cap ?? 3);
     const inmailCap = Number(settings?.inmail_chaser_cap ?? 1);
     const cooldownDays = Number(settings?.cooldown_days ?? 90);
+    // F20.11(c): ONE ceiling on drafts per run across every route, so a backlog drains over days instead of
+    // landing in Oliver's queue at once. Replies keep a reserve, because they run last and a warm conversation
+    // outranks a cold one: the other routes may not spend the last `replyReserve` slots.
+    const maxDrafts = Math.max(1, Math.min(200, Number((settings as Record<string, unknown> | null)?.max_drafts_per_run ?? 20)));
+    const replyReserve = Math.min(5, maxDrafts);
+    let draftedAll = 0, heldByBudget = 0;
 
     const today = new Date();
     const todayStr = today.toISOString().slice(0, 10);
@@ -103,7 +109,8 @@ Deno.serve(async (req) => {
     // ---------------- 2. due chasers
     const { data: candidates, error: cErr } = await supabase.rpc("fn_chase_candidates", { p_team_id: PIER_TEAM_ID, p_limit: limit });
     if (cErr) throw cErr;
-    const list = (candidates ?? []) as Candidate[];
+    // Chasers run concurrently, so their ceiling is applied to how many are considered.
+    const list = ((candidates ?? []) as Candidate[]).slice(0, Math.max(0, maxDrafts - replyReserve));
     const { data: allDue } = await supabase.rpc("fn_chase_candidates", { p_team_id: PIER_TEAM_ID, p_limit: 5000 });
     const backlog = ((allDue ?? []) as Candidate[]).length;
 
@@ -127,7 +134,7 @@ Deno.serve(async (req) => {
         return;
       }
       const trigger = `chaser_${c.chaser_number}`;
-      if (dryRun) { drafted++; results.push({ contact_id: c.contact_id, would_draft: trigger, route: c.route, channel: c.channel, cap: c.cap, is_final: c.is_final, priority: c.priority, days_since: c.days_since }); return; }
+      if (dryRun) { drafted++; draftedAll++; results.push({ contact_id: c.contact_id, would_draft: trigger, route: c.route, channel: c.channel, cap: c.cap, is_final: c.is_final, priority: c.priority, days_since: c.days_since }); return; }
       try {
         const resp = await fetch(`${SUPABASE_URL}/functions/v1/generate-draft-from-context`, {
           method: "POST", headers: { authorization: `Bearer ${INTERNAL_SECRET}`, "content-type": "application/json" },
@@ -137,7 +144,7 @@ Deno.serve(async (req) => {
         if (out?.refused) { refused++; refusedByCode[out.reason_code] = (refusedByCode[out.reason_code] ?? 0) + 1; results.push({ contact_id: c.contact_id, refused: out.reason_code, via: "drafter" }); return; }
         if (out?.status === "budget_exceeded") { failed++; results.push({ contact_id: c.contact_id, error: "budget_exceeded" }); return; }
         if (out?.status === "created") {
-          drafted++;
+          drafted++; draftedAll++;
           const producedChaser = String(out?.touch_type ?? "").startsWith("Chaser ");
           if (producedChaser) {
             await supabase.from("contacts").update({ chase_state: "chaser_drafted", chase_last_outbound_at: c.last_outbound, chase_next_due_at: addDays(today, intervalDays) }).eq("id", c.contact_id).eq("team_id", PIER_TEAM_ID);
@@ -157,6 +164,7 @@ Deno.serve(async (req) => {
       const { data: firsts, error: fErr } = await supabase.rpc("fn_first_message_candidates", { p_team_id: PIER_TEAM_ID, p_limit: firstMsgCap });
       if (fErr) console.error(JSON.stringify({ event: "first_message_candidates_failed", message: fErr.message }));
       for (const f of (firsts ?? []) as Array<{ contact_id: string; company_id: string | null; priority: string | null }>) {
+        if (draftedAll >= maxDrafts - replyReserve) { heldByBudget++; continue; }
         firstConsidered++;
         const { data: gateRows, error: gErr } = await supabase.rpc("fn_evaluate_gates", { p_team_id: PIER_TEAM_ID, p_contact_id: f.contact_id, p_channel: "LinkedIn DM", p_requested: "initial_message" });
         if (gErr) { firstFailed++; firstResults.push({ contact_id: f.contact_id, error: gErr.message }); continue; }
@@ -167,11 +175,11 @@ Deno.serve(async (req) => {
           firstResults.push({ contact_id: f.contact_id, refused: gate.reason_code, route: "first_message_after_cr" });
           continue;
         }
-        if (dryRun) { firstDrafted++; firstResults.push({ contact_id: f.contact_id, would_draft: "first_message_after_cr", priority: f.priority }); continue; }
+        if (dryRun) { firstDrafted++; draftedAll++; firstResults.push({ contact_id: f.contact_id, would_draft: "first_message_after_cr", priority: f.priority }); continue; }
         try {
           const resp = await fetch(`${SUPABASE_URL}/functions/v1/generate-draft-from-context`, { method: "POST", headers: { authorization: `Bearer ${INTERNAL_SECRET}`, "content-type": "application/json" }, body: JSON.stringify({ contact_id: f.contact_id, trigger_reason: "cr_accepted" }) });
           const out = await resp.json().catch(() => ({}));
-          if (out?.status === "created") { firstDrafted++; firstResults.push({ contact_id: f.contact_id, drafted: "first_message_after_cr", touch_id: out.touch_id }); }
+          if (out?.status === "created") { firstDrafted++; draftedAll++; firstResults.push({ contact_id: f.contact_id, drafted: "first_message_after_cr", touch_id: out.touch_id }); }
           else if (out?.refused) { firstRefused++; firstRefusedByCode[out.reason_code] = (firstRefusedByCode[out.reason_code] ?? 0) + 1; firstResults.push({ contact_id: f.contact_id, refused: out.reason_code, via: "drafter" }); }
           else { firstFailed++; firstResults.push({ contact_id: f.contact_id, error: out?.status ?? out?.error ?? "unknown" }); }
         } catch (e) { firstFailed++; firstResults.push({ contact_id: f.contact_id, error: (e as Error).message ?? String(e) }); }
@@ -188,6 +196,7 @@ Deno.serve(async (req) => {
       const { data: colds, error: kErr } = await supabase.rpc("fn_cold_inmail_candidates", { p_team_id: PIER_TEAM_ID, p_limit: coldCap });
       if (kErr) console.error(JSON.stringify({ event: "cold_inmail_candidates_failed", message: kErr.message }));
       for (const k of (colds ?? []) as Array<{ contact_id: string; company_id: string | null; priority: string | null; connection_status: string | null }>) {
+        if (draftedAll >= maxDrafts - replyReserve) { heldByBudget++; continue; }
         coldConsidered++;
         if (["Accepted", "Already connected"].includes(String(k.connection_status ?? ""))) { coldFailed++; coldResults.push({ contact_id: k.contact_id, error: "routing_invariant_violated: connected contact in cold InMail set" }); continue; }
         const { data: gateRows, error: gErr } = await supabase.rpc("fn_evaluate_gates", { p_team_id: PIER_TEAM_ID, p_contact_id: k.contact_id, p_channel: "LinkedIn inMail", p_requested: "initial_message" });
@@ -199,11 +208,11 @@ Deno.serve(async (req) => {
           coldResults.push({ contact_id: k.contact_id, refused: gate.reason_code, route: "cold_inmail_open" });
           continue;
         }
-        if (dryRun) { coldDrafted++; coldResults.push({ contact_id: k.contact_id, would_draft: "inmail_cold", priority: k.priority }); continue; }
+        if (dryRun) { coldDrafted++; draftedAll++; coldResults.push({ contact_id: k.contact_id, would_draft: "inmail_cold", priority: k.priority }); continue; }
         try {
           const resp = await fetch(`${SUPABASE_URL}/functions/v1/generate-draft-from-context`, { method: "POST", headers: { authorization: `Bearer ${INTERNAL_SECRET}`, "content-type": "application/json" }, body: JSON.stringify({ contact_id: k.contact_id, trigger_reason: "inmail_cold" }) });
           const out = await resp.json().catch(() => ({}));
-          if (out?.status === "created") { coldDrafted++; coldResults.push({ contact_id: k.contact_id, drafted: "inmail_cold", produced: out?.touch_type, touch_id: out.touch_id }); }
+          if (out?.status === "created") { coldDrafted++; draftedAll++; coldResults.push({ contact_id: k.contact_id, drafted: "inmail_cold", produced: out?.touch_type, touch_id: out.touch_id }); }
           else if (out?.refused) { coldRefused++; coldRefusedByCode[out.reason_code] = (coldRefusedByCode[out.reason_code] ?? 0) + 1; coldResults.push({ contact_id: k.contact_id, refused: out.reason_code, via: "drafter" }); }
           else { coldFailed++; coldResults.push({ contact_id: k.contact_id, error: out?.status ?? out?.error ?? "unknown" }); }
         } catch (e) { coldFailed++; coldResults.push({ contact_id: k.contact_id, error: (e as Error).message ?? String(e) }); }
@@ -224,6 +233,7 @@ Deno.serve(async (req) => {
       const { data: replies, error: rpErr } = await supabase.rpc("fn_reply_candidates", { p_team_id: PIER_TEAM_ID, p_limit: replyCap });
       if (rpErr) console.error(JSON.stringify({ event: "reply_candidates_failed", message: rpErr.message }));
       for (const r of (replies ?? []) as Array<{ contact_id: string; company_id: string | null; inbound_channel: string | null; connection_status: string | null }>) {
+        if (draftedAll >= maxDrafts) { heldByBudget++; continue; }
         replyConsidered++;
         const connected = ["Accepted", "Already connected"].includes(String(r.connection_status ?? ""));
         const channel = String(r.inbound_channel ?? "") === "Email" ? "Email" : connected ? "LinkedIn DM" : "LinkedIn inMail";
@@ -236,11 +246,11 @@ Deno.serve(async (req) => {
           replyResults.push({ contact_id: r.contact_id, refused: gate.reason_code, route: "reply_sweep" });
           continue;
         }
-        if (dryRun) { replyDrafted++; replyResults.push({ contact_id: r.contact_id, would_draft: "follow_up", channel }); continue; }
+        if (dryRun) { replyDrafted++; draftedAll++; replyResults.push({ contact_id: r.contact_id, would_draft: "follow_up", channel }); continue; }
         try {
           const resp = await fetch(`${SUPABASE_URL}/functions/v1/generate-draft-from-context`, { method: "POST", headers: { authorization: `Bearer ${INTERNAL_SECRET}`, "content-type": "application/json" }, body: JSON.stringify({ contact_id: r.contact_id, trigger_reason: "follow_up" }) });
           const out = await resp.json().catch(() => ({}));
-          if (out?.status === "created") { replyDrafted++; replyResults.push({ contact_id: r.contact_id, drafted: "follow_up", produced: out?.touch_type, channel: out?.channel, touch_id: out.touch_id }); }
+          if (out?.status === "created") { replyDrafted++; draftedAll++; replyResults.push({ contact_id: r.contact_id, drafted: "follow_up", produced: out?.touch_type, channel: out?.channel, touch_id: out.touch_id }); }
           else if (out?.refused) { replyRefused++; replyRefusedByCode[out.reason_code] = (replyRefusedByCode[out.reason_code] ?? 0) + 1; replyResults.push({ contact_id: r.contact_id, refused: out.reason_code, via: "drafter" }); }
           else { replyFailed++; replyResults.push({ contact_id: r.contact_id, error: out?.status ?? out?.error ?? "unknown" }); }
         } catch (e) { replyFailed++; replyResults.push({ contact_id: r.contact_id, error: (e as Error).message ?? String(e) }); }
@@ -255,6 +265,7 @@ Deno.serve(async (req) => {
       status: dryRun ? "dry_run" : "ok",
       rules: { chase_interval_days: intervalDays, dm_chaser_cap: dmCap, inmail_chaser_cap: inmailCap, cooldown_days: cooldownDays },
       cap_per_run: limit,
+      max_drafts_per_run: maxDrafts, drafted_all_routes: draftedAll, held_by_run_budget: heldByBudget,
       backlog_due_total: backlog,
       backlog_waiting_for_next_run: Math.max(0, backlog - list.length),
       considered: list.length,

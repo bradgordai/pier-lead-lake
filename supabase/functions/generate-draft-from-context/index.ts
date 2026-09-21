@@ -482,8 +482,13 @@ Deno.serve(async (req) => {
         console.warn(JSON.stringify({ event: "reply_with_group_collision", contact_id: contact.id, siblings: names }));
       }
     }
-    if (isReplyDraftEarly && company && String(company.research_stage ?? "") !== "Deep research done") {
-      researchNote = `Company not deep researched (${company.research_stage ?? "no stage"}): this reply was written from the conversation only, not from company knowledge.`;
+    // F20.1: the research gate warns instead of refusing. EVERY draft for a company that is not deep researched
+    // carries this note as the first line of its narrative and its first guardrail, so the card can show it in
+    // red and Oliver decides. A contact with no company at all is flagged the same way.
+    if (!company || String(company.research_stage ?? "") !== "Deep research done") {
+      researchNote = isReplyDraftEarly
+        ? `COMPANY NOT DEEP RESEARCHED (${company?.research_stage ?? "no company linked"}): this reply was written from the conversation only, not from company knowledge.`
+        : `COMPANY NOT DEEP RESEARCHED (${company?.research_stage ?? "no company linked"}): this draft was written without company research, so its hook is generic. Check it before sending.`;
       console.warn(JSON.stringify({ event: "reply_without_research", contact_id: contact.id, research_stage: company.research_stage ?? null }));
     }
     if (company?.archived_at) {
@@ -758,6 +763,7 @@ Deno.serve(async (req) => {
       draft_narrative: [groupNote, researchNote, draftNarrative].filter(Boolean).join(" ").trim() || null,
       draft_guardrails: [groupNote, researchNote, ...draftGuardrails].filter((g): g is string => !!g).slice(0, 6),
       draft_language: draftLanguage, draft_language_reason: draftLanguageReason,
+      research_warning: researchNote,
       voice_stack_versions: Object.keys(voiceStackVersions).length ? voiceStackVersions : null,
     };
     const { data: inserted, error: insErr } = await supabase.from("outreach_log").insert(insertRow).select("id").single();
