@@ -1,0 +1,27 @@
+-- 121 F19.0(f) (2026-09-21). ALREADY APPLIED by Cowork with raw SQL on the morning of 21 Sep 2026, with NO
+-- migration file and NO row in supabase_migrations.schema_migrations. DOCUMENTED HERE. DO NOT RE-APPLY.
+-- (The reconcile script lists this file as "in repo, not applied"; that is expected and correct.)
+--
+-- What happened. Migration 120 backfilled contacts.cr_accepted_at for 36 contacts from audit_log
+-- transitions into connection_status 'Accepted'. 24 of those 36 came from an 'Already connected' ->
+-- 'Accepted' event written by the connection watcher. That is a relabelling of someone Oliver was already
+-- connected to, not a connection request being accepted, so its timestamp is not an acceptance date.
+-- Cowork set cr_accepted_at to NULL on those 24. Zero overlap with the 12 genuine transitions.
+--
+-- Verified before writing this file (21 Sep): cr_accepted_at is not null on 12 contacts; 152 contacts are
+-- 'Accepted' with a null date and render "date unknown".
+--
+-- Reconstruction of the statement, from the F16.5 report's reversal SQL. It is idempotent: run again it
+-- changes nothing, because the 24 are already null. It is recorded for the history, not for execution.
+--
+-- update public.contacts c set cr_accepted_at = null
+--  where c.cr_accepted_at is not null
+--    and exists (select 1 from public.audit_log a
+--                 where a.entity_id = c.id
+--                   and a.after_value->>'connection_status' = 'Accepted'
+--                   and a.before_value->>'connection_status' = 'Already connected'
+--                   and a.created_at = c.cr_accepted_at);
+--
+-- Follow-on risk, NOT fixed here: trigger trg_stamp_cr_accepted_at (migration 120) stamps on ANY change to
+-- 'Accepted' from another status, so the next 'Already connected' -> 'Accepted' relabel will stamp again.
+select 1 where false;
