@@ -81,4 +81,12 @@ Not determined:
 - Whether today's additions are visible to the Oliver Müller Sales Nav seat that PhantomBuster logs in as. If the list was edited from a different seat, confirm it is shared.
 - Cause of the 17-18 Sep Make webhook queue stall.
 
+## Addendum: second read-only pass, 2026-09-21 ~14:30 UTC
+
+Independently re-verified the blueprint, agent arguments, container list and the 20 Sep result object; all agree with the above. New facts:
+
+- Someone launched the watcher agent by hand today: container 1621014097560249, `launchType` **manual**, 14:06:42 to 14:08:09 UTC, exit 0 (launch count now 339). It again loaded "Recently Accepted Connections and InMails", total 43, "Got 0 lead from page 1 (0 this launch) (25 already found)". Result object: `[{"error":"No new results found", ...}]`. Make execution 149e0f1fbe924439a018c077dd9b9a51 at 14:08:11 UTC = 1 op (stopped by the `"error"` filter). So a manual launch of this agent cannot ingest Lovable Master List leads either.
+- In that run page 2 returned "No results found on this page" followed by `[error] List couldn't be loaded using Oliver Müller`, yet the run exited 0. On 20 Sep page 2 loaded normally (18 already found). Login itself succeeded, so this is a page-2 load failure, not a dead cookie. It did not matter here (list is sorted newest first and page 1 had nothing new), but it is a silent partial-read: exit 0 with an error line.
+- `executions_get-detail` again returned only `{"status":"SUCCESS"}` for both 234bcd42... (8 ops) and 149e0f1f... (1 op). First-module input was therefore read from the PhantomBuster container result objects: 20 Sep = 1 webhook bundle whose `resultObject` holds 3 leads (Kanal, Lorenz, Koellges; all `ACCEPT_INVITATION`, `dateAdded` 2026-09-20 01:03); today = 1 webhook bundle holding the single "No new results found" error object. Make is being handed nothing new; it is not filtering real leads out.
+
 Options for the owner to decide (none actioned): schedule a second Sales Navigator List Export agent on list `7470433735855935489` with watcher mode on and the same webhook, and make `listName` dynamic in the Make body rather than hardcoded; or repeat the manual export + bulk load as a stopgap.
