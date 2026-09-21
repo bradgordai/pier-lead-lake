@@ -130,3 +130,24 @@ Every Lovable change above is in the project and its PREVIEW. Lovable ends each 
 app". Oliver works in the published app, so none of this reaches him until someone presses Publish. I have
 not published: it is a public deployment and the token-auth change has not yet been proven by a real call.
 Lovable has advanced 6 commits today (09bd77f9 -> 1dbc501a): 2 plan files and 4 changes.
+
+### 5. F19.5(c) + F17 B2 "chaser N of M", fired ONCE — SHIPPED, RENDERED, NEW LABEL NOT YET SEEN
+Schema re-read first (addendum 1). It corrected the brief a third time: **inmail_chaser_cap is 1, not 2**
+(dm_chaser_cap 3, email_chaser_cap exists, legacy chaser_cap 2). The footer's "of 2" was the legacy single
+cap, not a channel mix-up. **Lovable commit 8ed5393a09292ccdd0a0f8e37764974f728327a9** (before: 1dbc501a).
+Files: drafts.functions.ts, DraftEditor.tsx. M = the cap for the draft's own channel; N = 1 + chasers
+already SENT on that channel (Sent, not superseded/rejected, duplicate_of empty, not inferred); over cap
+renders red "over cap, should not exist"; header chip and footer now share one calculation; unsent rows in
+the thread carry an "unsent" marker (F19.9c). Verified in Chrome: the draft editor renders (Marvin in 't
+Groen, DM Chaser 3, signs "Oliver"). The chip still showed the OLD wording at that moment, consistent with
+the preview's 1-2 minute rebuild lag; to be re-read on the next pass. NOT verified: a contact over cap.
+
+### 6. F19.3(e) send queue strip on Today + "queued" Send now status — SHIPPED, CORRECTION IN FLIGHT
+**Lovable commit d7bd342c90d3106d1292c147a0732a6d3014e493** (before: 8ed5393a). New
+`SendQueueStrip.tsx` under the heartbeat strip reading v_send_queue_status (Sending now / Queued, expandable
+/ Sent today / Stuck in red with a Release queue button and the line "Frees the queue. Check LinkedIn
+before resending."), 30 s refresh. Send now: "queued" is now a calm success toast with the time and
+position and is watched without the 4 minute give-up; "refused" shows reason_human; the DM-limit wording is
+only used for DMs. This closes the live bug from 18 Sep where a queued send read "Not sent: queued".
+DEFECT I FOUND BY READING LOVABLE'S CODE: it validated the queue id as a UUID; send_queue.id is a whole
+number, so Release would always have failed. One correction message sent (not a retry of the build).
