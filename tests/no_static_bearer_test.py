@@ -12,7 +12,8 @@ The finding is printed by path and line only. The literal itself is never echoed
 import re, subprocess, sys, pathlib
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
-HEX48 = r"(?<![0-9a-fA-F])[0-9a-fA-F]{48}(?![0-9a-fA-F])"
+# F19: the literal found in Lovable on 21 Sep 2026 was 64 hex characters, not 48. Any 40-128 hex run counts.
+HEX48 = r"(?<![0-9a-fA-F])[0-9a-fA-F]{40,128}(?![0-9a-fA-F])"
 NEAR = re.compile(rf"(bearer|authorization).{{0,200}}?{HEX48}|{HEX48}.{{0,200}}?(bearer|authorization)", re.I | re.S)
 ASSIGNED = re.compile(rf"\w*(secret|token|key)\w*\s*[:=]\s*[\"'`]{HEX48}[\"'`]", re.I)
 SKIP_SUFFIX = {".png", ".jpg", ".jpeg", ".gif", ".pdf", ".xlsx", ".zip", ".pyc", ".ico", ".woff", ".woff2"}
@@ -37,7 +38,8 @@ def self_test():
     assert scan(f'const REPLY_EF_SECRET = "{fake}";'), "must catch assigned literal"
     assert scan(f'const secret = "{fake}";\n// ...\nfetch(u, {{ headers: {{ authorization: `Bearer ${{secret}}` }} }})'), "must catch split literal"
     assert not scan("authorization: `Bearer ${Deno.env.get('INTERNAL_APP_SECRET')}`"), "env read is fine"
-    assert not scan("ezbr_sha256 " + "a" * 64), "a 64-hex hash is not a 48-hex bearer"
+    assert scan('const secret = "' + "ab" * 32 + '";'), "must catch a 64-hex assigned literal"
+    assert not scan("ezbr_sha256 " + "a" * 64), "a bare hash with no Bearer/secret name nearby is fine"
 
 
 def main():

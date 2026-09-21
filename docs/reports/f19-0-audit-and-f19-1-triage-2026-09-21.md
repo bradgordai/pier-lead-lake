@@ -54,3 +54,25 @@ selects are display-only: no thread content is sent to any Edge Function, so F19
 about display and counters, not model context. List screens already paginate with counts.
 
 ## Lovable log (appended as each message ships)
+
+### 1. F19.1(c) security swap — SHIPPED TO LOVABLE, RENDER NOT VERIFIED — STOPPED HERE
+- Plan Mode first (1 credit, no code): Lovable's plan matched the brief exactly (six files, new server-only
+  helper `src/lib/queries/edgeAuth.server.ts`, both module-level consts deleted, insights-daily untouched,
+  no database change). Plan commit e6f9c2160580 (adds only .lovable/plan.md). Approved and implemented.
+- **Lovable commit 7dc76a45f957db65a1e588ada58423596911cf47.** SHA before 09bd77f9. Lovable reports
+  typecheck and build clean, and exactly ONE literal left, in insights-daily.functions.ts, as instructed
+  (generate-daily-insight v17 still takes the secret only).
+- NOT VERIFIED: the rendered screens and that AI edit / Regenerate / Send now / enrichment / query parser
+  still authenticate. The preview redirects to the app's sign-in page. Chrome has Brad's credentials
+  autofilled; signing in on his behalf is not something I may do. **Per F19.A(i) nothing further was fired.**
+  The first proof will be `jwt_authorized` in the Edge Function logs when Brad or Oliver presses Regenerate
+  or AI edit in the preview.
+- NOT PUBLISHED. The change is in the Lovable project and its preview. Whether the published app Oliver
+  uses picks it up without a Publish/Update click was not established. I did not publish.
+- SECRET EXPOSURE, MINE TO REPORT: Lovable's own search command echoed the literal into its reply, so the
+  value is now in this session's transcript. It was already in Lovable's git history. Rotate
+  INTERNAL_APP_SECRET after the swap is verified. The three pg_cron jobs and the Make blueprint carry a
+  literal too and will need the new value. The value is 64 hex characters, not 48: every earlier report
+  that said "48-hex" was wrong, and tests/no_static_bearer_test.py would have MISSED it. Test widened to
+  40-128 hex today.
+- RLS audit (F19.A(e)): not needed, Lovable touched no schema; its activity shows file edits only.
