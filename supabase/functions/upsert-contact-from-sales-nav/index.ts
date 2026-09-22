@@ -288,18 +288,34 @@ Deno.serve(async (req) => {
       if (r.error) throw r.error;
       existing = r.data;
     }
+    // F22B.2 (2026-09-23): last rung, the Sales Navigator member token (ACwAA...). The exact-URL rungs above
+    // missed 68 people on the 22 Sep run (the held row's /sales/lead/ URL carried a different suffix), so each
+    // got a second contact row and a second CR log row. The token is the same person whatever the URL shape.
+    // Oldest live row wins, so a re-import lands on the original, never on a later duplicate.
+    const urn = [profileUrl, linkedInProfileUrl].map((u) => /(ACwAA[A-Za-z0-9_-]+)/.exec(u ?? "")?.[1]).find(Boolean) ?? null;
+    if (!existing && urn) {
+      const r = await supabase
+        .from("contacts").select("id, contact_id, sn_lists, company_id, archived_at")
+        .eq("team_id", PIER_TEAM_ID).eq("linkedin_urn", urn).is("archived_at", null)
+        .order("created_at", { ascending: true }).limit(1).maybeSingle();
+      if (r.error) throw r.error;
+      existing = r.data;
+      if (existing) console.log(JSON.stringify({ event: "dedupe_by_urn", contact_id: existing.id, urn }));
+    }
 
     if (existing) {
       // Assert: a live re-import should not be resolving a soft-deleted contact.
       if (existing.archived_at) console.warn(JSON.stringify({ event: "dedupe_on_archived_contact", contact_id: existing.id }));
       const nextLists = uniquePush(existing.sn_lists, listName);
       // A re-import may carry a URL the row lacks: fill the blank field only, never overwrite.
-      const { data: cur } = await supabase.from("contacts").select("linkedin_url, linkedin_sales_nav_url, url_provenance").eq("id", existing.id).maybeSingle();
+      const { data: cur } = await supabase.from("contacts").select("linkedin_url, linkedin_sales_nav_url, linkedin_slug, url_provenance").eq("id", existing.id).maybeSingle();
       const fill: Record<string, unknown> = { sn_lists: nextLists, updated_at: new Date().toISOString() };
       const prov = { ...((cur?.url_provenance as Record<string, unknown>) ?? {}) };
       if (!cur?.linkedin_url && storedLinkedinUrl) { fill.linkedin_url = storedLinkedinUrl; prov.linkedin_url = { source: "watcher", at: new Date().toISOString(), basis: `Sales Nav list export: ${listName || "unnamed list"}` }; }
       if (!cur?.linkedin_sales_nav_url && storedSalesNavUrl) { fill.linkedin_sales_nav_url = storedSalesNavUrl; prov.linkedin_sales_nav_url = { source: "watcher", at: new Date().toISOString(), basis: `Sales Nav list export: ${listName || "unnamed list"}` }; }
       if (fill.linkedin_url || fill.linkedin_sales_nav_url) fill.url_provenance = prov;
+      // F22B.2: fill a blank slug too, so the Connection Watcher's acceptance (matched by slug) finds this row.
+      if (!cur?.linkedin_slug && slug) fill.linkedin_slug = slug;
       const { error: updErr } = await supabase
         .from("contacts").update(fill).eq("id", existing.id);
       if (updErr) throw updErr;
