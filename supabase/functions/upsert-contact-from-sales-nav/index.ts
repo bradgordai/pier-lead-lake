@@ -1,4 +1,4 @@
-// Edge Function: upsert-contact-from-sales-nav  (v-F12 + F14.2 2026-09-14 heartbeat: two URL fields, degree stored, fail closed)
+// Edge Function: upsert-contact-from-sales-nav  (v-F12 + F14.2 2026-09-14 heartbeat: two URL fields, degree stored, fail closed; F22B.2 Out-of-Network)
 //
 // Called by Make.com after the Sales Nav "List Export" phantom fires, once per lead.
 // Flow: verify shared secret -> dedupe (canonical linkedin_slug first, then URL) ->
@@ -103,16 +103,16 @@ const COUNTRY_SYNONYMS: Record<string, string> = {
   "Scotland": "UK", "Wales": "UK", "Northern Ireland": "UK",
   "United States": "USA", "United States of America": "USA",
   "Deutschland": "Germany",
-  "Osterreich": "Austria", "\u00d6sterreich": "Austria",
+  "Osterreich": "Austria", "Österreich": "Austria",
   "Nederland": "Netherlands", "The Netherlands": "Netherlands", "Holland": "Netherlands",
   "Schweiz": "Switzerland", "Suisse": "Switzerland", "Svizzera": "Switzerland",
-  "Belgie": "Belgium", "Belgi\u00eb": "Belgium", "Belgique": "Belgium",
-  "Espana": "Spain", "Espa\u00f1a": "Spain",
+  "Belgie": "Belgium", "België": "Belgium", "Belgique": "Belgium",
+  "Espana": "Spain", "España": "Spain",
   "Italia": "Italy", "France": "France",
   "Czechia": "Czech Republic", "Cesko": "Czech Republic",
-  "Polska": "Poland", "Magyarorszag": "Hungary", "Magyarorsz\u00e1g": "Hungary",
+  "Polska": "Poland", "Magyarorszag": "Hungary", "Magyarország": "Hungary",
   "Sverige": "Sweden", "Suomi": "Finland", "Danmark": "Denmark",
-  "Eire": "Ireland", "\u00c9ire": "Ireland",
+  "Eire": "Ireland", "Éire": "Ireland",
   "United Arab Emirates": "UAE",
 };
 function inferCountryFromLocation(location: string | null): string | null {
@@ -252,8 +252,16 @@ Deno.serve(async (req) => {
   // F12 T3: the degree is data, not a hint. Sales Nav emits "1st" / "2nd" / "3rd" (sometimes with
   // " degree"); anything else is unknown and a Request-sent row without a degree is refused by the
   // DB (fail closed), so refuse it here with a clear error rather than let Make swallow it.
+  // F22B.2 (2026-09-23): Sales Nav also emits "Out-of-Network" (the 100-lead rerun 422'd on it). Accepted
+  // case-insensitively with hyphens or spaces and stored as "Out of network". It is network DISTANCE only: it
+  // says nothing about whether an invitation is pending, and nothing here reasons from it to the invitation
+  // state. The connection_status below is unchanged (Brad's ruling: every lead on the Master List already had
+  // its CR sent, which is how it got onto the list). A genuinely absent or unrecognised degree is still refused.
   const degreeMatch = /^([123])(st|nd|rd)?(\s+degree)?$/i.exec(connectionDegree.trim());
-  const connectionLevel = degreeMatch ? ({ "1": "1st degree", "2": "2nd degree", "3": "3rd degree" } as Record<string, string>)[degreeMatch[1]] : null;
+  const outOfNetwork = /^out[\s-]*of[\s-]*network$/i.test(connectionDegree.trim());
+  const connectionLevel = degreeMatch
+    ? ({ "1": "1st degree", "2": "2nd degree", "3": "3rd degree" } as Record<string, string>)[degreeMatch[1]]
+    : outOfNetwork ? "Out of network" : null;
 
   try {
     // ---------- 1. Dedupe: canonical slug first, then raw URL (backward compatible) ----------
@@ -422,7 +430,7 @@ Deno.serve(async (req) => {
     const connectionStatus = isFirstDegree ? "Already connected" : "Request sent";
     if (!isFirstDegree && !connectionLevel) {
       console.error(JSON.stringify({ event: "degree_missing_refused", profileUrl, connectionDegree }));
-      return json(422, { error: "connection_degree_missing", detail: `connectionDegree "${connectionDegree}" is not 1st/2nd/3rd. A Request-sent contact must carry its degree (fail closed). Fix the phantom mapping in Make and resend.` });
+      return json(422, { error: "connection_degree_missing", detail: `connectionDegree "${connectionDegree}" is not 1st/2nd/3rd/Out-of-Network. A Request-sent contact must carry its degree (fail closed). Fix the phantom mapping in Make and resend.` });
     }
     const nowIso = new Date().toISOString();
     const urlProvenance: Record<string, unknown> = {};
@@ -487,7 +495,7 @@ Deno.serve(async (req) => {
         draft_status: "sent",
         agent_produced: false,
         migrated_legacy: false,
-        sent_by: "Oliver M\u00fcller",
+        sent_by: "Oliver Müller",
         message_body: null,
         subject_line: null,
         touch_id: `cr-${crypto.randomUUID()}`,
