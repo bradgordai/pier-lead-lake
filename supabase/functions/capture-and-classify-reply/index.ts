@@ -1,4 +1,6 @@
-// Edge Function: capture-and-classify-reply  (v22, 2026-09-15: F15.5 reply draft on every captured reply; F15.8 uniform In conversation move; v21: F14.0 dedupe, thread_url, heartbeat)
+// Edge Function: capture-and-classify-reply  (v26, 2026-09-22: F22A.2 both inbox scrapers normalised to one form,
+// Sales Nav URN rung, channel from lastMessageType, degree -> connection_level only, cross-scraper dedupe key,
+// linkedin_threads count-mismatch detection. v22, 2026-09-15: F15.5 reply draft on every captured reply; F15.8 uniform In conversation move; v21: F14.0 dedupe, thread_url, heartbeat)
 //
 // Every LinkedIn inbox message reaches this function: from Make "Pier Inbox Watcher"
 // (scenario 9704543, fed by the Inbox Scraper phantom's webhook every 4 hours), from the
@@ -164,27 +166,92 @@ function toList(v: unknown): string[] {
   return [];
 }
 
+// F22A.2 (v26, 2026-09-22): TWO scrapers, two inboxes, one function. Every body is normalised to ONE internal
+// form first. The Sales Navigator Inbox Scraper (7307653238072765) sends lastMessageBody / lastMessageType /
+// participants[] {profileUrl /sales/people/ACwAA...,NAME_SEARCH,xx, firstName, lastName, degree NUMBER} /
+// totalMessageCount; the LinkedIn Inbox Scraper (2840951049581867) sends message / firstnameFrom / lastnameFrom /
+// lastMessageFromUrl. Before v26 the Sales Nav shape was read as the LinkedIn one, so its body and sender came
+// out empty and every InMail reply (Deiminger 22 Sep) was queued as "(no text)" with no identifier.
 type Payload = {
   message: string; threadUrl: string; timestamp: string; lastMessageDate: string;
   firstnameFrom: string; lastnameFrom: string; occupationFrom: string;
   lastMessageFromUrl: string; lastMessageFromEntityUrn: string; linkedInUrls: string[];
   isLastMessageFromMe: boolean; readStatus: boolean;
+  // F22A.2 normalised extras
+  source: "sales_nav_inbox" | "linkedin_inbox"; channel: "LinkedIn inMail" | "LinkedIn DM";
+  messageType: string; subject: string; urn: string | null; degree: number | null; totalMessageCount: number | null;
 };
+/** The Sales Navigator member token (ACwAA...) from /sales/lead/ or /sales/people/, any ",NAME_SEARCH,.." suffix dropped. */
+function extractUrn(s: string): string | null {
+  const m = /(ACwAA[A-Za-z0-9_-]+)/.exec(String(s ?? ""));
+  return m ? m[1] : null;
+}
+/** unix seconds (string or number), unix ms, or ISO -> ISO; "" when unparseable. */
+function toIso(v: unknown): string {
+  const s = String(v ?? "").trim();
+  if (!s) return "";
+  if (/^\d{9,13}$/.test(s)) { const n = Number(s); return new Date(s.length <= 10 ? n * 1000 : n).toISOString(); }
+  return Number.isNaN(Date.parse(s)) ? "" : new Date(s).toISOString();
+}
+/** degree arrives as a NUMBER; 0, null, NaN and anything outside 1..3 mean "unknown" and write nothing. */
+function toDegree(v: unknown): number | null {
+  if (v === null || v === undefined || v === "") return null;
+  const n = Number(v);
+  return Number.isInteger(n) && n >= 1 && n <= 3 ? n : null;
+}
+/** lastMessageType decides the channel: INMAIL, INMAIL_ACCEPT, INMAIL_DECLINE, SPONSORED_INMAIL -> InMail; MESSAGE/DM -> DM. */
+function channelOf(messageType: string, threadUrl: string): "LinkedIn inMail" | "LinkedIn DM" {
+  const t = messageType.toUpperCase();
+  if (t.includes("INMAIL")) return "LinkedIn inMail";
+  if (t === "MESSAGE" || t === "DM" || t === "MEMBER_TO_MEMBER") return "LinkedIn DM";
+  return /\/sales\/inbox\//i.test(threadUrl) ? "LinkedIn inMail" : "LinkedIn DM";
+}
 // deno-lint-ignore no-explicit-any
 function parsePayload(body: any): Payload {
+  const isSalesNav = Array.isArray(body?.participants) || body?.lastMessageBody !== undefined || body?.lastMessageType !== undefined;
+  const threadUrl = pick(body, ["threadUrl", "threadId", "thread", "conversationUrl", "conversationId"]);
+  if (isSalesNav) {
+    // deno-lint-ignore no-explicit-any
+    const parts: any[] = Array.isArray(body?.participants) ? body.participants : [];
+    const them = parts.find((x) => !isOli(String(x?.profileUrl ?? ""))) ?? parts[0] ?? {};
+    const profileUrl = String(them?.profileUrl ?? "").trim();
+    const messageType = pick(body, ["lastMessageType"]);
+    return {
+      message: pick(body, ["lastMessageBody", "message"]),
+      threadUrl,
+      timestamp: toIso(body?.timestamp),
+      lastMessageDate: toIso(body?.lastMessageDate) || toIso(body?.timestamp),
+      firstnameFrom: String(them?.firstName ?? "").trim(),
+      lastnameFrom: String(them?.lastName ?? "").trim().replace(/^[A-Za-zÀ-ÿ]\.$/, ""), // "D." is a truncation, not a name
+      occupationFrom: "",
+      // The participant is the COUNTERPARTY of the thread whoever wrote the last message.
+      lastMessageFromUrl: profileUrl,
+      lastMessageFromEntityUrn: "",
+      linkedInUrls: parts.map((x) => String(x?.profileUrl ?? "").trim()).filter(Boolean),
+      isLastMessageFromMe: toBool(body?.isLastMessageFromMe),
+      readStatus: Number(body?.unreadMessageCount ?? 0) === 0,
+      source: "sales_nav_inbox", channel: channelOf(messageType, threadUrl), messageType,
+      subject: pick(body, ["lastMessageSubject"]), urn: extractUrn(profileUrl), degree: toDegree(them?.degree),
+      totalMessageCount: Number.isFinite(Number(body?.totalMessageCount)) ? Number(body.totalMessageCount) : null,
+    };
+  }
+  const fromUrl = pick(body, ["lastMessageFromUrl", "senderProfileUrl", "profileUrl", "senderUrl", "publicProfileUrl"]);
+  const urls = toList(body?.linkedInUrls);
   return {
     message: pick(body, ["message", "messageBody", "text", "messageText", "snippet", "body"]),
-    threadUrl: pick(body, ["threadUrl", "threadId", "thread", "conversationUrl", "conversationId"]),
+    threadUrl,
     timestamp: pick(body, ["timestamp"]),
     lastMessageDate: pick(body, ["lastMessageDate", "messageDate", "date", "messageDateTime", "sentAt"]),
     firstnameFrom: pick(body, ["firstnameFrom", "senderFirstName", "firstName"]),
     lastnameFrom: pick(body, ["lastnameFrom", "senderLastName", "lastName"]),
     occupationFrom: pick(body, ["occupationFrom", "occupation", "headline"]),
-    lastMessageFromUrl: pick(body, ["lastMessageFromUrl", "senderProfileUrl", "profileUrl", "senderUrl", "publicProfileUrl"]),
+    lastMessageFromUrl: fromUrl,
     lastMessageFromEntityUrn: pick(body, ["lastMessageFromEntityUrn", "entityUrn"]),
-    linkedInUrls: toList(body?.linkedInUrls),
+    linkedInUrls: urls,
     isLastMessageFromMe: toBool(body?.isLastMessageFromMe),
     readStatus: toBool(body?.readStatus),
+    source: "linkedin_inbox", channel: channelOf(pick(body, ["lastMessageType"]), threadUrl), messageType: pick(body, ["lastMessageType"]),
+    subject: "", urn: [fromUrl, ...urls].map(extractUrn).find(Boolean) ?? null, degree: null, totalMessageCount: null,
   };
 }
 /** Identifiers that can name the COUNTERPARTY of this thread. Oliver's own ids are excluded. */
@@ -198,8 +265,17 @@ function counterpartyIds(p: Payload): string[] {
   if (p.threadUrl) ids.add(norm(p.threadUrl));
   return Array.from(ids).filter((x) => x && !isOli(x));
 }
-async function externalKey(p: Payload): Promise<string> {
+const NO_TEXT = "(no text: an image, a document or a reaction)";
+/** v16-v25 key: thread + date + body. Kept so replays of already-filed messages stay no-ops. */
+async function legacyKey(p: Payload): Promise<string> {
   return await sha256Hex(`${norm(p.threadUrl)}|${p.lastMessageDate || p.timestamp}|${p.message.trim()}`);
+}
+/** F22A.2(f): the SAME message seen by BOTH scrapers carries different thread URLs (sales/inbox vs messaging/thread)
+ *  and different date precision, so the key is the message itself: direction + day + whitespace-folded text.
+ *  A message with no text falls back to the thread-based key. */
+async function externalKey(p: Payload): Promise<string> {
+  if (!p.message || p.message === NO_TEXT || normWs(p.message).length < 8) return await legacyKey(p);
+  return await sha256Hex(`v2|${p.isLastMessageFromMe ? "out" : "in"}|${messageDateIso(p).slice(0, 10)}|${normWs(p.message).slice(0, 400)}`);
 }
 function messageDateIso(p: Payload): string {
   const raw = p.lastMessageDate || p.timestamp;
@@ -223,7 +299,7 @@ async function learnAliases(contactId: string, ids: string[], current?: any): Pr
 
 // ---------------------------------------------------------------- matching ladder
 type Candidate = { contact_id: string; full_name: string; job_title: string | null; company_name: string | null; last_outbound: string | null; score: number };
-type Match = { contactId: string | null; rung: "alias" | "slug" | "name" | "none"; candidates: Candidate[] };
+type Match = { contactId: string | null; rung: "urn" | "alias" | "slug" | "name" | "none"; candidates: Candidate[] };
 
 function occupationOverlap(occupation: string, title: string | null, company: string | null): boolean {
   const occ = normName(occupation);
@@ -237,6 +313,21 @@ function occupationOverlap(occupation: string, title: string | null, company: st
 
 async function matchContact(p: Payload): Promise<Match> {
   const ids = counterpartyIds(p);
+  // (a0) F22A.2(c): the Sales Navigator member token. Stored on contacts.linkedin_urn from /sales/lead/ OR
+  //      /sales/people/, so the scraper's /sales/people/ACwAA...,NAME_SEARCH,xx now matches a /sales/lead/ record.
+  //      Two live rows on one token (a duplicate contact) is ambiguous: prefer the one that is not a "-dup" ref,
+  //      otherwise queue both as candidates rather than guess.
+  if (p.urn) {
+    const { data: hits } = await supabase.from("contacts").select("id, contact_id, first_name, last_name, job_title")
+      .eq("team_id", PIER_TEAM_ID).eq("linkedin_urn", p.urn).is("archived_at", null).limit(5);
+    const live = (hits ?? []) as Array<{ id: string; contact_id: string | null; first_name: string | null; last_name: string | null; job_title: string | null }>;
+    const primary = live.filter((h) => !/-dup$/i.test(String(h.contact_id ?? "")));
+    const pickOne = live.length === 1 ? live[0] : primary.length === 1 ? primary[0] : null;
+    if (pickOne) return { contactId: pickOne.id, rung: "urn", candidates: [] };
+    if (live.length > 1) {
+      return { contactId: null, rung: "none", candidates: live.map((h) => ({ contact_id: h.id, full_name: `${h.first_name ?? ""} ${h.last_name ?? ""}`.trim(), job_title: h.job_title, company_name: null, last_outbound: null, score: 90 })) };
+    }
+  }
   // (a) alias
   if (ids.length) {
     const { data } = await supabase.rpc("fn_match_contact_by_alias", { p_team_id: PIER_TEAM_ID, p_ids: ids });
@@ -396,9 +487,12 @@ async function fileOwnMessage(contactId: string, p: Payload, key: string): Promi
   const body = p.message.trim();
   const when = messageDateIso(p);
   const day = when.slice(0, 10);
-  // A manually logged or migrated touch on the same day with the same opening text is the same message.
+  // A manually logged, migrated or phantom-sent touch with the same opening text is the same message. F22A.2: a
+  // phantom send's touch_date can be the DRAFT date, a day or more before the send, so look 3 days back.
+  const from = new Date(Date.parse(day) - 3 * 86400000).toISOString().slice(0, 10);
+  const to = new Date(Date.parse(day) + 86400000).toISOString().slice(0, 10);
   const { data: sameDay } = await supabase.from("outreach_log").select("id, message_body, sent_body, thread_url")
-    .eq("team_id", PIER_TEAM_ID).eq("contact_id", contactId).neq("touch_type", "Reply").eq("touch_date", day).limit(50);
+    .eq("team_id", PIER_TEAM_ID).eq("contact_id", contactId).neq("touch_type", "Reply").gte("touch_date", from).lte("touch_date", to).limit(50);
   const same = (sameDay ?? []).find((r) => isSameMessage(r, body, p.threadUrl));
   if (same?.id) {
     await supabase.from("outreach_log").update({ external_key: key, thread_url: p.threadUrl || null }).eq("id", same.id);
@@ -409,8 +503,8 @@ async function fileOwnMessage(contactId: string, p: Payload, key: string): Promi
     .eq("team_id", PIER_TEAM_ID).eq("contact_id", contactId).neq("touch_type", "Reply").eq("send_status", "Sent");
   const { data: ins, error } = await supabase.from("outreach_log").insert({
     team_id: PIER_TEAM_ID, touch_id: `inbox-${crypto.randomUUID()}`, contact_ref: contact?.contact_id ?? null, contact_id: contactId,
-    company_id: contact?.company_id ?? null, channel: "LinkedIn DM", touch_type: (prior ?? 0) > 0 ? "Follow up" : "Initial message",
-    message_body: body, sent_body: body, subject_line: null, draft_status: "sent", send_status: "Sent", sent_by: "Oliver",
+    company_id: contact?.company_id ?? null, channel: p.channel, touch_type: (prior ?? 0) > 0 ? "Follow up" : "Initial message",
+    message_body: body, sent_body: body, subject_line: p.subject || null, draft_status: "sent", send_status: "Sent", sent_by: "Oliver",
     sent_at_actual: when, touch_date: day, agent_produced: false, migrated_legacy: false, external_key: key,
     thread_id: extractUuid(p.threadUrl), thread_url: p.threadUrl || null,
   }).select("id").single();
@@ -445,7 +539,8 @@ async function fileInbound(contactId: string, p: Payload, key: string): Promise<
 
   const { data: inserted, error: insErr } = await supabase.from("outreach_log").insert({
     team_id: PIER_TEAM_ID, touch_id: `reply-${crypto.randomUUID()}`, contact_ref: contact.contact_id ?? null, contact_id: contact.id,
-    company_id: contact.company_id ?? null, channel: "LinkedIn DM", touch_type: "Reply", message_body: body, reply_content: body,
+    // F22A.2(e): the channel is lastMessageType's, never assumed (an InMail reply was filed as DM before v26).
+    company_id: contact.company_id ?? null, channel: p.channel, touch_type: "Reply", message_body: body, reply_content: body,
     // F11.3: an inbound reply is a fact, not a draft awaiting review. Terminal status, same
     // as every migrated Reply row, so it never inflates the pending-review count.
     reply_received_at: when, thread_id: extractUuid(p.threadUrl), thread_url: p.threadUrl || null, draft_status: "sent", send_status: "Sent",
@@ -513,7 +608,7 @@ async function fileInbound(contactId: string, p: Payload, key: string): Promise<
 async function queueOrphan(p: Payload, key: string, candidates: Candidate[]): Promise<"queued" | "already_queued"> {
   const { error } = await supabase.from("unmatched_replies").insert({
     team_id: PIER_TEAM_ID, external_key: key, thread_url: p.threadUrl || null, sender_url: p.lastMessageFromUrl || null,
-    sender_urn: p.lastMessageFromEntityUrn || null, sender_first_name: p.firstnameFrom || null, sender_last_name: p.lastnameFrom || null,
+    sender_urn: p.lastMessageFromEntityUrn || p.urn || null, sender_first_name: p.firstnameFrom || null, sender_last_name: p.lastnameFrom || null,
     sender_occupation: p.occupationFrom || null, message_body: p.message.trim(), message_at: messageDateIso(p), is_from_me: p.isLastMessageFromMe,
     payload: p, candidates, status: "open",
   });
@@ -539,25 +634,68 @@ async function processPayload(body: any, counts: Counts): Promise<Record<string,
   const p = parsePayload(body);
   counts.processed++;
   if (!p.message && !p.threadUrl) { counts.skipped++; return { status: "skipped", reason: "empty_payload" }; }
-  if (!p.message) p.message = "(no text: an image, a document or a reaction)";
+  if (!p.message) p.message = NO_TEXT;
   const key = await externalKey(p);
-  const dup = await existingByKey(key);
-  if (dup) { counts.duplicates++; return { status: "duplicate", touch_id: dup }; }
+  const oldKey = await legacyKey(p);
+  const dup = (await existingByKey(key)) ?? (oldKey !== key ? await existingByKey(oldKey) : null);
+  if (dup) { counts.duplicates++; await noteThread(p, null); return { status: "duplicate", touch_id: dup }; }
   const m = await matchContact(p);
   if (m.contactId) {
     await learnAliases(m.contactId, counterpartyIds(p));
+    await applyDegree(m.contactId, p);
     const r = p.isLastMessageFromMe ? await fileOwnMessage(m.contactId, p, key) : await fileInbound(m.contactId, p, key);
     if (r.outcome === "duplicate") counts.duplicates++;
     else if (r.outcome === "filed_own_message") counts.own_threaded++;
     else counts.matched++;
-    // If an earlier pass queued this message, the queue entry is now resolved.
+    // If an earlier pass queued this message (under either key), the queue entry is now resolved.
     await supabase.from("unmatched_replies").update({ status: "assigned", assigned_contact_id: m.contactId, assigned_at: new Date().toISOString(), created_touch_id: r.touch_id })
-      .eq("team_id", PIER_TEAM_ID).eq("external_key", key).eq("status", "open");
-    return { status: r.outcome, contact_id: m.contactId, touch_id: r.touch_id, rung: m.rung, reply_classification: r.classification };
+      .eq("team_id", PIER_TEAM_ID).in("external_key", [key, oldKey]).eq("status", "open");
+    await noteThread(p, m.contactId);
+    return { status: r.outcome, contact_id: m.contactId, touch_id: r.touch_id, rung: m.rung, reply_classification: r.classification, source: p.source, channel: p.channel };
+  }
+  // Already queued under the pre-v26 key by an earlier pass: do not queue it twice.
+  if (oldKey !== key) {
+    const { data: q0 } = await supabase.from("unmatched_replies").select("id").eq("team_id", PIER_TEAM_ID).eq("external_key", oldKey).limit(1).maybeSingle();
+    if (q0?.id) { counts.duplicates++; await noteThread(p, null); return { status: "already_queued", reason: "no_match" }; }
   }
   const q = await queueOrphan(p, key, m.candidates);
   if (q === "queued") counts.queued++; else counts.duplicates++;
-  return { status: q, reason: "no_match", candidates: m.candidates.length, is_from_me: p.isLastMessageFromMe };
+  await noteThread(p, null);
+  return { status: q, reason: "no_match", candidates: m.candidates.length, is_from_me: p.isLastMessageFromMe, source: p.source };
+}
+
+/** F22A.2(e): the scraper's degree writes contacts.connection_level ONLY (1..3). Never connection_status: degree is
+ *  not invitation state. 0 / null / out of range write nothing. */
+async function applyDegree(contactId: string, p: Payload): Promise<void> {
+  if (p.degree === null) return;
+  const level = p.degree === 1 ? "1st degree" : p.degree === 2 ? "2nd degree" : "3rd degree";
+  try {
+    await supabase.from("contacts").update({ connection_level: level }).eq("team_id", PIER_TEAM_ID).eq("id", contactId).neq("connection_level", level);
+    // A NULL connection_level is not matched by neq; fill it separately.
+    await supabase.from("contacts").update({ connection_level: level }).eq("team_id", PIER_TEAM_ID).eq("id", contactId).is("connection_level", null);
+  } catch (e) { console.error(JSON.stringify({ event: "degree_write_failed", contact_id: contactId, message: (e as Error).message })); }
+}
+
+/** F22A.2(g): one linkedin_threads row per thread. total_message_count comes from the scraper; held_count is what
+ *  we hold for that contact on that channel (sent touches + replies). incomplete = total > held (generated column).
+ *  Detection only: nothing is back-scraped. */
+async function noteThread(p: Payload, contactId: string | null): Promise<void> {
+  if (!p.threadUrl) return;
+  try {
+    let held = 0;
+    if (contactId) {
+      const { count } = await supabase.from("outreach_log").select("id", { count: "exact", head: true })
+        .eq("team_id", PIER_TEAM_ID).eq("contact_id", contactId).eq("channel", p.channel).eq("send_status", "Sent").neq("touch_type", "Connection request");
+      held = count ?? 0;
+    }
+    const row: Record<string, unknown> = {
+      team_id: PIER_TEAM_ID, thread_url: p.threadUrl, source: p.source, channel: p.channel, counterpart_urn: p.urn,
+      last_message_at: messageDateIso(p), last_message_from_me: p.isLastMessageFromMe, last_seen_at: new Date().toISOString(),
+    };
+    if (p.totalMessageCount !== null) row.total_message_count = p.totalMessageCount;
+    if (contactId) { row.contact_id = contactId; row.held_count = held; }
+    await supabase.from("linkedin_threads").upsert(row, { onConflict: "team_id,thread_url" });
+  } catch (e) { console.error(JSON.stringify({ event: "thread_note_failed", thread_url: p.threadUrl, message: (e as Error).message })); }
 }
 
 // ---------------------------------------------------------------- PhantomBuster
