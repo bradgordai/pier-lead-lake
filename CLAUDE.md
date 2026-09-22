@@ -106,12 +106,22 @@ section 8.1(g); the "To Review" default stands anyway.
 - Lovable owns every screen and calls Edge Functions with the signed-in user's JWT (except
   generate-daily-insight, still secret-only at v17).
 - PhantomBuster SENDS: 5691059901018698 Pier LinkedIn Message Sender (DM), 8651232052097344 Pier Sales
-  Navigator Message Sender (InMail), 7500783933729451 Pier LinkedIn Auto Connect (CR). It SCRAPES:
-  2343586699386601 Pier Sales Nav Watcher (exports list "Recently Accepted Connections and InMails",
-  NOT the Lovable Master List, which is why new leads stopped on 16 Sep), plus the inbox scraper.
+  Navigator Message Sender (InMail), 7500783933729451 Pier LinkedIn Auto Connect (CR).
+- PhantomBuster SCRAPES: 2343586699386601 Pier Sales Nav Watcher, repointed by Brad on 22 Sep and now
+  reading the Lovable Master List correctly (100 profiles found; the Make run 422s on "Out-of-Network",
+  unfixed). Two SEPARATE inbox scrapers, and BOTH run, because a Sales Navigator InMail thread and a
+  normal LinkedIn DM thread are different inboxes and neither shows the other (this is why InMail replies
+  were invisible until 22 Sep):
+  - 7307653238072765 Pier Sales Navigator Inbox Scraper -> Make hook ending pvfyton1djs2sgrt4l9gjm5nsnslyh6m.
+    Reads InMail threads. Payload: threadUrl, lastMessageDate, lastMessageType, lastMessageBody,
+    lastMessageSubject, isLastMessageFromMe, totalMessageCount, unreadMessageCount, isArchived,
+    restriction, timestamp (unix seconds as a STRING), participants[] with a NUMBER degree.
+  - 2840951049581867 Pier LinkedIn Inbox Scraper -> Make hook ending bx735w393em1h9ig9okgyjgd9cmx1p8h.
+    Reads the normal LinkedIn inbox. Different payload shape, separate Make scenario, same destination
+    (capture-and-classify-reply).
 - Make WATCHES (team 586107): 9589633 Pier Sales Nav Watcher (webhook from PhantomBuster ->
-  upsert-contact-from-sales-nav, hardcoded listName "P0 Sales Nav List"), the connection watcher and the
-  inbox watcher (4-hourly), and 9714524 Pier Send Callback (webhook -> send-approved-callback; to be
+  upsert-contact-from-sales-nav, hardcoded listName "P0 Sales Nav List"), the connection watcher, the
+  two inbox watcher scenarios (one per scraper above, 4-hourly), and 9714524 Pier Send Callback (webhook -> send-approved-callback; to be
   replaced by PhantomBuster calling the function directly with ?auth=). Make ops are metered.
 
 ## 13. Live gotchas
