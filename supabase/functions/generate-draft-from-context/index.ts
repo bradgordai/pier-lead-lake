@@ -11,6 +11,9 @@ import { callAnthropicWithSentinel, BudgetExceededError } from "./_shared/anthro
 // F15.6/F15.9 (v34-v35, 2026-09-15): voice_assets stack (layers 1-3, layer 4 only for r4/r8) with version stamping;
 // context per type (opener: company+contact; chaser: opener in full + its narrative/guardrails + earlier chasers;
 // reply: whole thread); replies answered on the inbound channel; regenerate throttled to one per two minutes.
+// F22A.1 (v43, 2026-09-22): country map deleted (EN/DE only: their reply > Language field > EN); voice_oliver on every
+// touch type; InMail subject "Pier Insurance x {company} - Partnership"; InMail carries no name (Sales Nav adds it);
+// German umlaut rule + transliteration lint. F22A.5: contact_guidance_notes read into their own block (never over a gate).
 // F9.5/F9.6 (v29-v31): explicit target-language resolution (prior thread > contact Language > market
 // default), draft_language recorded from the generated body, sign-off enforced.
 import { contactNotesBlock, mergeAiStateOfPlay } from "./_shared/conversation-summary.ts";
@@ -137,35 +140,31 @@ function detectLanguage(text: string): string | null {
   if (bestScore === 0 || bestScore < Math.max(2, words.length * 0.04) || bestScore === second) return null;
   return best;
 }
-const MARKET_LANGUAGE: Record<string, string> = {
-  germany: "DE", austria: "DE", switzerland: "DE", france: "FR", belgium: "FR", netherlands: "NL",
-  spain: "ES", italy: "IT", finland: "EN", sweden: "EN", denmark: "EN", norway: "EN", poland: "EN",
-  "united kingdom": "EN", uk: "EN", ireland: "EN", "united states": "EN", usa: "EN",
-};
+// F22A.1(a): the country-to-language map is DELETED. It came from our own commit 6ab963e, not from Oliver, and
+// contradicted Email_Architect 2.3 ("do not infer the target language from ... locations alone") and 11a.2
+// ("English and German only by default"). A French company no longer gets French.
+const WRITTEN_LANGUAGES = new Set(["EN", "DE"]);
 /**
- * F9.5b. Explicit order: (1) the language of the prior thread, the contact's own replies first,
- * then our sent messages, most recent first; (2) the contact's Language field; (3) the market
- * default for the company's country (EA rule), else EN.
+ * F22A.1(a). Order: (1) the language of the contact's OWN prior replies, most recent first; (2) the contact's
+ * Language field; (3) English. detectLanguage still RECOGNISES other languages inbound, but we only ever WRITE
+ * in English or German: any other resolved language is written in English, and the reason says so.
  */
 // deno-lint-ignore no-explicit-any
-function resolveTargetLanguage(prev: any[], contactLang: string | null | undefined, country: string | null | undefined): { language: string; reason: string } {
+function resolveTargetLanguage(prev: any[], contactLang: string | null | undefined): { language: string; reason: string } {
+  const clamp = (l: string, reason: string) => WRITTEN_LANGUAGES.has(l)
+    ? { language: l, reason }
+    : { language: "EN", reason: `${reason}; ${l} is not a written language (EN and DE only), writing EN` };
   const replies = prev.filter((r) => r.touch_type === "Reply").reverse();
   for (const r of replies) {
     const l = detectLanguage(String(r.reply_content ?? r.message_body ?? ""));
-    if (l) return { language: l, reason: `prior_thread: their reply of ${r.touch_date ?? "?"} is ${l}` };
-  }
-  // Only messages that actually went out count as the thread; an unsent draft is not evidence.
-  const sent = prev.filter((r) => r.touch_type !== "Reply" && String(r.send_status ?? "") === "Sent").reverse();
-  for (const r of sent) {
-    const l = detectLanguage(String(r.sent_body ?? r.message_body ?? ""));
-    if (l) return { language: l, reason: `prior_thread: our message of ${r.touch_date ?? "?"} is ${l}` };
+    if (l) return clamp(l, `their_reply: their reply of ${r.touch_date ?? "?"} is ${l}`);
   }
   const cl = String(contactLang ?? "").trim().toUpperCase();
-  if (cl) return { language: cl, reason: "contact_language: contact Language field" };
-  const mk = MARKET_LANGUAGE[String(country ?? "").trim().toLowerCase()];
-  if (mk) return { language: mk, reason: `market_default: ${country}` };
-  return { language: "EN", reason: "market_default: no country, EN" };
+  if (cl && cl !== "OTHER") return clamp(cl, "contact_language: contact Language field");
+  return { language: "EN", reason: "default: no reply and no Language field, EN" };
 }
+// F22A.1(e): a German draft uses real umlauts. The transliterated spellings the model copied from notes.
+const GERMAN_TRANSLITERATION = /(^|[^\p{L}])(fuer|ueber\p{L}*|koennen|koennte\p{L}*|moechte\p{L}*|waere\p{L}*|wuerde\p{L}*|gruesse|gruessen|hoeren|naechste\p{L}*|spaeter|geraet\p{L}*|\p{L}*geraet\p{L}*|zusaetzlich\p{L}*|muessen|haette\p{L}*|laeuft|laesst|luecke\p{L}*|\p{L}*luecke|loesung\p{L}*|moeglich\p{L}*|natuerlich|zurueck\p{L}*|haendler\p{L}*|unabhaengig|auffaellig|tatsaechlich|geschaeft\p{L}*|verhaeltnis\p{L}*|waehrend|haeufig\p{L}*)(?=[^\p{L}]|$)/iu;
 const LANG_NAMES: Record<string, string> = { EN: "English", DE: "German", FR: "French", NL: "Dutch", ES: "Spanish", IT: "Italian", FI: "Finnish" };
 /** F9.6. The message contract says every message ends with the sender's first name. */
 function ensureSignOff(message: string, sender: string): { message: string; appended: boolean } {
@@ -175,6 +174,19 @@ function ensureSignOff(message: string, sender: string): { message: string; appe
   const re = new RegExp(`(^|[^\\p{L}])${sender.toLowerCase().replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}([^\\p{L}]|$)`, "u");
   if (re.test(tail)) return { message: body, appended: false };
   return { message: `${body}\n\n${sender}`, appended: true };
+}
+/** F22A.1(d). Remove trailing lines that are only the sender's name (Sales Navigator appends it to InMails). */
+function stripTrailingName(message: string, sender: string): string {
+  const lines = String(message ?? "").trimEnd().split(/\r?\n/);
+  const names = new Set([sender, "Oliver", "Oli", "Oliver Mueller", "Oliver Müller"].filter(Boolean).map((s) => s.toLowerCase()));
+  const last = () => lines[lines.length - 1].trim().replace(/[.,]$/, "").toLowerCase();
+  while (lines.length > 1 && (last() === "" || names.has(last()))) lines.pop();
+  return lines.join("\n").trimEnd();
+}
+/** F22A.1(c). Brad's InMail subject format, generated at draft time and editable by Oliver. */
+function inMailSubject(companyName: string | null | undefined): string | null {
+  const n = String(companyName ?? "").trim();
+  return n ? `Pier Insurance x ${n} - Partnership` : null;
 }
 
 const BANNED = ["—", "–", "circle back", "touch base", "synergise", "synergize", "unlock", "hope this finds", "just following up", "reach out to explore", "quick one", "leveraging", "excited to connect", "we're uniquely positioned", "best-in-class"];
@@ -208,7 +220,7 @@ async function raiseReconciliationNote(contactId: string, triggerReason: string,
   }
 }
 
-function preLint(message: string): { score: number; pass: boolean; violations: unknown[] } {
+function preLint(message: string, language?: string | null): { score: number; pass: boolean; violations: unknown[] } {
   const lower = message.toLowerCase();
   const violations: unknown[] = [];
   let bannedHits = 0;
@@ -218,6 +230,11 @@ function preLint(message: string): { score: number; pass: boolean; violations: u
   }
   const len = message.length;
   let score = 100 - 5 * bannedHits;
+  // F22A.1(e): flag a German draft that transliterates (fuer, Geraet, ...) instead of using ä ö ü.
+  if (String(language ?? "").toUpperCase() === "DE") {
+    const m = message.match(GERMAN_TRANSLITERATION);
+    if (m) { score -= 20; violations.push({ type: "german_transliteration", term: m[2], note: "German must use ä ö ü (and ß outside Switzerland), never ae/oe/ue" }); }
+  }
   if (len > 800) { score -= 10; violations.push({ type: "length", chars: len, note: "over LinkedIn DM soft cap (800)" }); }
   const hardFail = len > 2000;
   if (hardFail) violations.push({ type: "length_hard", chars: len, note: "over hard cap (2000)" });
@@ -519,7 +536,7 @@ Deno.serve(async (req) => {
     // rejected drafts never feed the narrative, the no-repetition context or the counters.
     const allPrev = (prevRows ?? []).filter((r) => r.touch_type === "Reply" || String(r.send_status ?? "") === "Sent");
     // F9.5b: the target language is decided here, explicitly, and told to the model.
-    const target = resolveTargetLanguage(allPrev, contact.language_code, company?.country ?? null);
+    const target = resolveTargetLanguage(allPrev, contact.language_code);
     console.log(JSON.stringify({ event: "language_resolved", contact_id: contact.id, language: target.language, reason: target.reason }));
     // F15.6 CONTEXT PER TYPE (matrix): an opener sees company + contact only (no thread exists); a chaser
     // sees the opener IN FULL plus the narrative/guardrails that produced it plus every earlier chaser on
@@ -576,12 +593,12 @@ Deno.serve(async (req) => {
     }
 
     // F15.6 VOICE STACK (manifest 002_DRAFT_STACK): layer 1 pier_rules, layer 2 pier_terminology, layer 3
-    // the channel architect (linkedin_architect / email_architect), layer 4 voice_oliver ONLY for the
-    // first message after CR accepted (r4) and a warm email reply (r8). Every other touch type (mid-thread
-    // LinkedIn replies, chasers, cold InMail, cold email) runs layers 1-3. Versions are stamped on the row.
+    // the channel architect (linkedin_architect / email_architect). F22A.1(b): layer 4 voice_oliver now loads for
+    // EVERY touch type (cold InMail, chasers, CR notes, replies), not only r4/r8: those were the bulk of what
+    // Oliver sends and the source of his edits. The layer-4 label names the touch type. Versions stamped on the row.
     const useEmailArchitect = mapped.channel === "Email";
-    const layer4Type = (effectiveTrigger === "cr_accepted") ? "first_message_after_cr"
-                     : (isReplyDraft && mapped.channel === "Email") ? "warm_email_reply" : null;
+    const layer4Type: string | null = `${mapped.touch_type} via ${mapped.channel}`;
+    const isInMail = mapped.channel === "LinkedIn inMail";
     const voiceIds = ["pier_rules", "pier_terminology", useEmailArchitect ? "email_architect" : "linkedin_architect", ...(layer4Type ? ["voice_oliver"] : [])];
     let systemPrompt = "";
     let eaDocsLoaded = false;
@@ -597,7 +614,7 @@ Deno.serve(async (req) => {
       if (l1?.body && l2?.body && l3?.body && (!layer4Type || l4?.body)) {
         for (const v of [l1, l2, l3, l4]) if (v) voiceStackVersions[v.id] = v.version;
         // Cache breakpoints: layers 1+2 are identical on every call (one block), layer 3 has two variants,
-        // layer 4 is appended only on r4/r8. Each static block carries its own breakpoint.
+        // layer 4 (voice_oliver, every touch type since F22A.1) is the third. Each static block carries its own breakpoint.
         systemBlocks = [
           { type: "text", text: `===== LAYER 1: ${l1.id} (${l1.version}) =====\n${l1.body}\n\n===== LAYER 2: ${l2.id} (${l2.version}) =====\n${l2.body}`, cache_control: { type: "ephemeral" } },
           { type: "text", text: `===== LAYER 3: ${l3.id} (${l3.version}) =====\n${l3.body}`, cache_control: { type: "ephemeral" } },
@@ -657,8 +674,30 @@ Deno.serve(async (req) => {
     const todayIso = new Date().toISOString().slice(0, 10);
     // F6.6: next_action, background_notes and conversation_summary, clearly labelled, with the
     // two rules stated in the prompt text (gates override notes; note dates matter).
+    // F22A.1(d): Sales Navigator appends the sender's name to every InMail and cannot be switched off, so an
+    // InMail keeps its closing line but never carries the name. DMs, CRs and email keep the full sign-off.
+    const signOffInstruction = isInMail
+      ? `Sign off: end with a short closing line (for example "Viele Grüße" or "Best") and DO NOT write any name after it. Sales Navigator adds ${sender}'s name automatically; a name here would appear twice.`
+      : `Sign off: ${sender}`;
     const notesBlock = contactNotesBlock({ next_action: contact.next_action, next_action_date: contact.next_action_date, background_notes: contact.background_notes, conversation_summary: contact.conversation_summary, today: todayIso });
-    const userPrompt = `DRAFT REQUEST\n\nTrigger: ${triggerReason}\nMessage type: ${mapped.touch_type} via ${mapped.channel}\nChannel: ${mapped.channel}\nIntent: ${mapped.intent}\nPath: ${path}\nFrame: ${frame}\nArc: ${arc}\n\nCONTACT\nName: ${contact.first_name ?? ""} ${contact.last_name ?? ""}\nTitle: ${contact.job_title ?? ""}\nSeniority: ${contact.seniority ?? ""}\nFunction: ${contact.function ?? ""}\nLocation: ${contact.location ?? ""}\nLinkedIn URL: ${contact.linkedin_url ?? ""}\nLanguage: WRITE IN ${LANG_NAMES[target.language] ?? target.language} (${target.language}). Reason: ${target.reason}. This overrides the contact's Language field.\nRegister: ${registerLine(contact.formality, target.language)}\n\nCOMPANY\nName: ${co.company_name ?? ""}\nCountry: ${co.country ?? ""}\nCategory: ${Array.isArray(co.category) ? co.category.join(", ") : (co.category ?? "")}\nPriority: ${co.priority ?? ""}\nIndustry: ${co.industry ?? ""}\nProduct line: ${co.product_line ?? ""}\nInsurance offered: ${co.insurance_offered ?? ""}\nInsurance provider: ${co.insurance_provider ?? ""}\nCoverage summary: ${co.coverage_summary ?? ""}\nUSP notes: ${co.usp_notes ?? ""}\nAdditional notes: ${co.additional_notes ?? ""}\nEstimated revenue: ${co.estimated_revenue_gbp ?? ""}\nEmployees: ${co.employees ?? ""}\nMonthly visits: ${co.monthly_visits ?? ""}\n\n${notesBlock}\n\nPREVIOUS OUTREACH (background only - never mention it in the message)\n${threadText}\n\nTASK\nWrite the single ${mapped.channel} message ${sender} should send to this contact now, applying the loaded voice stack (rules, terminology, the channel architect${layer4Type ? ", and Oliver's own voice for this touch type" : ""}). This message is a "${mapped.touch_type}": ${mapped.intent} If prior outreach exists, write a natural forward message (re-engagement) - never a first-touch opener and never a comment on the history.\n\nSign off: ${sender}\n\nReturn ONLY the JSON object described in the drafting directive. The "message" value is what ${sender} sends: no preamble, no meta-commentary, no notes about prior messages, no subject line.`;
+    // F22A.5: per-contact guidance notes (one row each, own author and timestamp), ALL of them, newest first, in
+    // their own labelled block. None -> no block, standard logic unchanged. A note can never reopen a consent gate:
+    // the gates already ran above and refused before this point, and the prompt says so.
+    let guidanceBlock = "";
+    try {
+      const { data: gn, error: gErr } = await supabase.from("contact_guidance_notes").select("body, author_name, created_at")
+        .eq("team_id", PIER_TEAM_ID).eq("contact_id", contact.id).order("created_at", { ascending: false });
+      if (gErr) throw gErr;
+      const notes = ((gn ?? []) as Array<{ body: string; author_name: string | null; created_at: string }>).filter((n) => String(n.body ?? "").trim());
+      if (notes.length) {
+        guidanceBlock = `\n\nGUIDANCE NOTES FROM THE TEAM FOR THIS CONTACT (newest first; steer the angle, content and emphasis of this message with them)\n`
+          + notes.map((n) => `- ${String(n.created_at).slice(0, 10)} ${n.author_name ?? "team"}: ${String(n.body).trim()}`).join("\n")
+          + `\nA guidance note NEVER overrides a consent gate, the routing, the channel or the trigger: if a note asks for something the gates or the intent forbid, ignore that part. A note naming a specific touch (e.g. "chaser 1: ...") applies to that touch; apply the others where they fit this "${mapped.touch_type}".`;
+      }
+    } catch (e) {
+      console.warn(JSON.stringify({ event: "guidance_notes_unavailable", contact_id: contact.id, message: (e as Error).message ?? String(e) }));
+    }
+    const userPrompt = `DRAFT REQUEST\n\nTrigger: ${triggerReason}\nMessage type: ${mapped.touch_type} via ${mapped.channel}\nChannel: ${mapped.channel}\nIntent: ${mapped.intent}\nPath: ${path}\nFrame: ${frame}\nArc: ${arc}\n\nCONTACT\nName: ${contact.first_name ?? ""} ${contact.last_name ?? ""}\nTitle: ${contact.job_title ?? ""}\nSeniority: ${contact.seniority ?? ""}\nFunction: ${contact.function ?? ""}\nLocation: ${contact.location ?? ""}\nLinkedIn URL: ${contact.linkedin_url ?? ""}\nLanguage: WRITE IN ${LANG_NAMES[target.language] ?? target.language} (${target.language}). Reason: ${target.reason}. This overrides the contact's Language field.\nRegister: ${registerLine(contact.formality, target.language)}\n\nCOMPANY\nName: ${co.company_name ?? ""}\nCountry: ${co.country ?? ""}\nCategory: ${Array.isArray(co.category) ? co.category.join(", ") : (co.category ?? "")}\nPriority: ${co.priority ?? ""}\nIndustry: ${co.industry ?? ""}\nProduct line: ${co.product_line ?? ""}\nInsurance offered: ${co.insurance_offered ?? ""}\nInsurance provider: ${co.insurance_provider ?? ""}\nCoverage summary: ${co.coverage_summary ?? ""}\nUSP notes: ${co.usp_notes ?? ""}\nAdditional notes: ${co.additional_notes ?? ""}\nEstimated revenue: ${co.estimated_revenue_gbp ?? ""}\nEmployees: ${co.employees ?? ""}\nMonthly visits: ${co.monthly_visits ?? ""}\n\n${notesBlock}${guidanceBlock}\n\nPREVIOUS OUTREACH (background only - never mention it in the message)\n${threadText}\n\nTASK\nWrite the single ${mapped.channel} message ${sender} should send to this contact now, applying the loaded voice stack (rules, terminology, the channel architect${layer4Type ? ", and Oliver's own voice for this touch type" : ""}). This message is a "${mapped.touch_type}": ${mapped.intent} If prior outreach exists, write a natural forward message (re-engagement) - never a first-touch opener and never a comment on the history.\n\n${signOffInstruction}\n${target.language === "DE" ? "\nGERMAN SPELLING: write real umlauts and Eszett: ä ö ü Ä Ö Ü ß. NEVER transliterate to ae / oe / ue / ss, even if the notes above are written that way (for a Swiss contact ss replaces ß only; ä ö ü stay).\n" : ""}\nReturn ONLY the JSON object described in the drafting directive. The "message" value is what ${sender} sends: no preamble, no meta-commentary, no notes about prior messages, no subject line (the subject is set separately).`;
 
     let messageBody = "";
     let draftNarrative: string | null = null;
@@ -681,7 +720,7 @@ Deno.serve(async (req) => {
         messages: [{ role: "user", content: userPrompt }],
         function_name: "generate-draft-from-context",
         team_id: PIER_TEAM_ID,
-        request_context: { contact_id: contact.id, trigger_reason: triggerReason, touch_type: mapped.touch_type, sender, purpose: "draft_generation", dry_run: dryRun, voice_stack: voiceStackVersions, layer4: layer4Type },
+        request_context: { contact_id: contact.id, trigger_reason: triggerReason, touch_type: mapped.touch_type, sender, purpose: "draft_generation", dry_run: dryRun, voice_stack: voiceStackVersions, layer4: layer4Type, guidance_notes: guidanceBlock ? true : false },
         supabase,
         anthropic_api_key: ANTHROPIC_API_KEY,
       });
@@ -726,7 +765,12 @@ Deno.serve(async (req) => {
 
     // F9.6: the contract says the message ends with the sender's first name.
     let signOffAppended = false;
-    if (!generationFailed) {
+    if (!generationFailed && isInMail) {
+      // F22A.1(d): the model was told not to sign an InMail; if it still ended on the bare name, drop that line.
+      const stripped = stripTrailingName(messageBody, sender);
+      if (stripped !== messageBody) console.warn(JSON.stringify({ event: "inmail_name_stripped", contact_id: contact.id, sender }));
+      messageBody = stripped;
+    } else if (!generationFailed) {
       const so = ensureSignOff(messageBody, sender);
       messageBody = so.message;
       signOffAppended = so.appended;
@@ -741,20 +785,22 @@ Deno.serve(async (req) => {
       : target.reason;
     if (detected && detected !== target.language) console.warn(JSON.stringify({ event: "language_mismatch", contact_id: contact.id, target: target.language, detected }));
 
-    const lint = generationFailed ? { score: 0, pass: false, violations: [{ type: "generation_error", note: "Anthropic call failed; placeholder inserted" }] as unknown[] } : preLint(messageBody);
+    const lint = generationFailed ? { score: 0, pass: false, violations: [{ type: "generation_error", note: "Anthropic call failed; placeholder inserted" }] as unknown[] } : preLint(messageBody, draftLanguage);
+    // F22A.1(c): InMail only. A row with no company keeps subject_line null and send-approved-draft's fallback.
+    const subjectLine = isInMail ? inMailSubject(company?.company_name) : null;
 
     // B2 verification path: dry_run exercises the full generation (so cache behaviour is
     // real) but writes NO row. Used to measure the cached/uncached split without leaving
     // test drafts in Pending Review for Oli to clean up.
     if (dryRun) {
       console.log(JSON.stringify({ event: "draft_dry_run", contact_id: contact.id, usage, estimated_cost_gbp: costGbp }));
-      return json(200, { status: "dry_run", contact_id: contact.id, sender, usage, voice_stack_versions: voiceStackVersions, layer4: layer4Type, research_note: researchNote, group_note: groupNote, estimated_cost_gbp: costGbp, narrative: draftNarrative, guardrails: draftGuardrails, message_preview: messageBody.slice(0, 300), message: messageBody, lint_score: lint.score, draft_language: draftLanguage, draft_language_reason: draftLanguageReason, sign_off_appended: signOffAppended, touch_type: mapped.touch_type, channel: mapped.channel, effective_trigger: effectiveTrigger, routing_notes: routingNotes, thread_context: threadText.slice(0, 600) });
+      return json(200, { status: "dry_run", contact_id: contact.id, sender, usage, voice_stack_versions: voiceStackVersions, layer4: layer4Type, research_note: researchNote, group_note: groupNote, estimated_cost_gbp: costGbp, narrative: draftNarrative, guardrails: draftGuardrails, message_preview: messageBody.slice(0, 300), message: messageBody, subject_line: subjectLine, lint_violations: lint.violations, lint_score: lint.score, draft_language: draftLanguage, draft_language_reason: draftLanguageReason, sign_off_appended: signOffAppended, touch_type: mapped.touch_type, channel: mapped.channel, effective_trigger: effectiveTrigger, routing_notes: routingNotes, thread_context: threadText.slice(0, 600) });
     }
 
     const today = new Date().toISOString().slice(0, 10);
     const insertRow = {
       team_id: PIER_TEAM_ID, touch_id: `agent-${crypto.randomUUID()}`, contact_ref: contact.contact_id ?? null, contact_id: contact.id, company_id: contact.company_id ?? null,
-      channel: mapped.channel, touch_type: mapped.touch_type, message_body: messageBody, subject_line: null,
+      channel: mapped.channel, touch_type: mapped.touch_type, message_body: messageBody, subject_line: subjectLine,
       draft_status: "pending_review", send_status: "Draft", agent_produced: true,
       pre_lint_pass: lint.pass, voice_contract_violations: lint.violations, lint_score: lint.score,
       path, recommended_frame: frame, recommended_arc: arc, touch_date: today,
