@@ -1,4 +1,8 @@
-// Edge Function: capture-and-classify-reply  (v26, 2026-09-22: F22A.2 both inbox scrapers normalised to one form,
+// Edge Function: capture-and-classify-reply  (v28, 2026-09-23: company evidence needs a multi-word or 8+ char name. v27, 2026-09-23: F22B.4 the queue holds only plausible Pier replies:
+// name matching makes CANDIDATES only, never a match; an unmatched OWN message is never queued; an unmatched inbound is
+// queued only with evidence of Pier outreach, otherwise it goes to message_ignore_log with the reason; a permanent
+// ignore list; action reprocess_queue re-runs the open queue. URN ties go to the oldest live contact.
+// v26, 2026-09-22: F22A.2 both inbox scrapers normalised to one form,
 // Sales Nav URN rung, channel from lastMessageType, degree -> connection_level only, cross-scraper dedupe key,
 // linkedin_threads count-mismatch detection. v22, 2026-09-15: F15.5 reply draft on every captured reply; F15.8 uniform In conversation move; v21: F14.0 dedupe, thread_url, heartbeat)
 //
@@ -15,20 +19,19 @@
 //   (a) alias: any identifier in the payload (sender URL, entity URN, participant URLs,
 //       thread URL) already learned onto contacts.linkedin_aliases -> exact match.
 //   (b) slug: a public /in/<slug> in the payload against linkedin_slug / linkedin_url.
-//   (c) name: firstnameFrom + lastnameFrom (diacritics folded) scoped to the team; auto-filed
-//       only when exactly one candidate AND (we sent them something in the last 60 days OR
-//       occupationFrom overlaps their stored title / company).
-//   (d) otherwise the message lands in unmatched_replies (the Reconciliation queue). Never dropped.
+//   (c) name: firstnameFrom + lastnameFrom (diacritics folded) scoped to the team. Since v27 (F22B.4) a name
+//       produces CANDIDATES only and never files a message.
+//   (d) otherwise: an inbound WITH evidence of Pier outreach lands in unmatched_replies (the Reconciliation queue);
+//       an own message, or an inbound without evidence, lands in message_ignore_log with its reason. Never dropped.
 //
 //   ALIAS LEARNING: every successful match (auto or human assign) persists the payload's
 //   identifiers onto the contact, so that sender exact-matches forever after.
 //
 //   OWN MESSAGES (isLastMessageFromMe=true) are Oliver's. No classify, no draft, no alert.
 //   The phantom names Oliver as the sender, so the name rung reads the greeting in the body
-//   ("Hi Joan", "Hallo Herr Siebel") and files only when exactly one live contact carries
-//   that name AND we sent them something within 60 days of the message. Otherwise queued
-//   with the candidates. Filed messages become outbound touches, which keeps threads
-//   current with what Oli sends by hand and feeds sent_body.
+//   ("Hi Joan", "Hallo Herr Siebel") for CANDIDATES only (v27). An own message is filed when the URN, an alias or a
+//   slug resolves it; otherwise it goes to message_ignore_log, never the reply queue. Filed messages become outbound
+//   touches, which keeps threads current with what Oli sends by hand and feeds sent_body.
 //
 //   Messages with no text (an image, a document, a reaction) are queued with a placeholder,
 //   never dropped.
@@ -43,6 +46,7 @@
 //   sync_inbox        launch the Inbox Scraper phantom, returns container_id
 //   sync_status       { container_id } -> running | done + counts (processes the result object)
 //   replay_containers { container_ids[] } -> counts (backfill)
+//   reprocess_queue   { dry_run } -> re-runs every OPEN unmatched_replies row through v27's rules (F22B.4(a))
 //
 // Auth: scoped bearer, inbound class (Make) or internal class (Lovable). verify_jwt=false.
 
@@ -129,7 +133,7 @@ function isSameMessage(row: any, body: string, threadUrl: string): boolean {
   if (a.slice(0, 40) === b.slice(0, 40)) return true;
   return !!threadUrl && norm(row?.thread_url ?? "") === norm(threadUrl) && a === b;
 }
-const foldAscii = (s: string) => String(s ?? "").normalize("NFD").replace(/[\u0300-\u036f]/g, "").replace(/ß/g, "ss");
+const foldAscii = (s: string) => String(s ?? "").normalize("NFD").replace(/[̀-ͯ]/g, "").replace(/ß/g, "ss");
 const normName = (s: string) => foldAscii(s).toLowerCase().replace(/[^a-z0-9 ]+/g, " ").replace(/\s+/g, " ").trim();
 /** The counterparty's name as addressed in the opening line of Oliver's own message. */
 function greetingName(body: string): { kind: "first" | "last"; name: string } | null {
@@ -315,17 +319,18 @@ async function matchContact(p: Payload): Promise<Match> {
   const ids = counterpartyIds(p);
   // (a0) F22A.2(c): the Sales Navigator member token. Stored on contacts.linkedin_urn from /sales/lead/ OR
   //      /sales/people/, so the scraper's /sales/people/ACwAA...,NAME_SEARCH,xx now matches a /sales/lead/ record.
-  //      Two live rows on one token (a duplicate contact) is ambiguous: prefer the one that is not a "-dup" ref,
-  //      otherwise queue both as candidates rather than guess.
+  //      Two live rows on one token is a duplicate CONTACT, not two people (the token is the member): prefer the one
+  //      that is not a "-dup" ref, otherwise the OLDEST live row (F22B.4, same rule as upsert-contact-from-sales-nav v26;
+  //      the 22 Sep Sales Nav run created 68 later duplicates of held people).
   if (p.urn) {
-    const { data: hits } = await supabase.from("contacts").select("id, contact_id, first_name, last_name, job_title")
-      .eq("team_id", PIER_TEAM_ID).eq("linkedin_urn", p.urn).is("archived_at", null).limit(5);
+    const { data: hits } = await supabase.from("contacts").select("id, contact_id, first_name, last_name, job_title, created_at")
+      .eq("team_id", PIER_TEAM_ID).eq("linkedin_urn", p.urn).is("archived_at", null).order("created_at", { ascending: true }).limit(5);
     const live = (hits ?? []) as Array<{ id: string; contact_id: string | null; first_name: string | null; last_name: string | null; job_title: string | null }>;
     const primary = live.filter((h) => !/-dup$/i.test(String(h.contact_id ?? "")));
-    const pickOne = live.length === 1 ? live[0] : primary.length === 1 ? primary[0] : null;
-    if (pickOne) return { contactId: pickOne.id, rung: "urn", candidates: [] };
-    if (live.length > 1) {
-      return { contactId: null, rung: "none", candidates: live.map((h) => ({ contact_id: h.id, full_name: `${h.first_name ?? ""} ${h.last_name ?? ""}`.trim(), job_title: h.job_title, company_name: null, last_outbound: null, score: 90 })) };
+    const pickOne = live.length === 1 ? live[0] : primary.length === 1 ? primary[0] : primary[0] ?? live[0] ?? null;
+    if (pickOne) {
+      if (live.length > 1) console.log(JSON.stringify({ event: "urn_tie_oldest", contact_id: pickOne.id, rows: live.length }));
+      return { contactId: pickOne.id, rung: "urn", candidates: [] };
     }
   }
   // (a) alias
@@ -370,8 +375,7 @@ async function matchContact(p: Payload): Promise<Match> {
     const { data: rows } = await supabase.rpc(fn, args);
     // deno-lint-ignore no-explicit-any
     const cands = toCands((rows ?? []) as any[], false);
-    // A greeting is weaker evidence than a full name: file only with a recent outbound.
-    if (cands.length === 1 && cands[0].score >= 80) return { contactId: cands[0].contact_id, rung: "name", candidates: cands };
+    // F22B.4(c): a name is a CANDIDATE, never a match (four false pairs on this data came from names).
     return { contactId: null, rung: "none", candidates: cands.slice(0, 5) };
   }
 
@@ -381,8 +385,67 @@ async function matchContact(p: Payload): Promise<Match> {
   // deno-lint-ignore no-explicit-any
   const cands = toCands(((rows ?? []) as any[])
     .filter((r) => !wantFirst || normName(r.first_name ?? "") === wantFirst || normName(r.first_name ?? "").startsWith(wantFirst.split(" ")[0])), true);
-  if (cands.length === 1 && cands[0].score >= 70) return { contactId: cands[0].contact_id, rung: "name", candidates: cands };
+  // F22B.4(c): a name is a CANDIDATE, never a match.
   return { contactId: null, rung: "none", candidates: cands.slice(0, 5) };
+}
+
+// ---------------------------------------------------------------- F22B.4 queue filter
+/** Candidate score at or above which a name candidate counts as evidence that an inbound is Pier outreach:
+ *  name + a Pier outbound within 60 days (80), or name + headline overlapping the held title/company (70). */
+const CANDIDATE_EVIDENCE_MIN = 70;
+// deno-lint-ignore no-explicit-any
+let companyNamesCache: { at: number; names: string[] } | null = null;
+async function heldCompanyNames(): Promise<string[]> {
+  if (companyNamesCache && Date.now() - companyNamesCache.at < 10 * 60000) return companyNamesCache.names;
+  const { data } = await supabase.from("companies").select("company_name").eq("team_id", PIER_TEAM_ID).is("archived_at", null).limit(5000);
+  const names = Array.from(new Set((data ?? []).map((r: { company_name: string }) => normName(String(r.company_name ?? "").replace(/\(.*?\)/g, " ")))
+    // Many held names are ordinary words ("Device", "Green", "Expert", "Enjoy"), and a headline containing one proves
+    // nothing. Only multi-word names, or single words of 8+ characters, count as evidence.
+    .filter((n: string) => (n.includes(" ") ? n.length >= 5 : n.length >= 8))));
+  companyNamesCache = { at: Date.now(), names };
+  return names;
+}
+/** (e) the permanent ignore list, matched on the counterpart's member token or public slug. */
+async function ignoreListHit(p: Payload): Promise<string | null> {
+  const slugs = [p.lastMessageFromUrl, ...p.linkedInUrls].map((u) => extractSlug(u)).filter(Boolean) as string[];
+  if (p.urn) {
+    const { data } = await supabase.from("message_ignore_list").select("display_name").eq("team_id", PIER_TEAM_ID).eq("linkedin_urn", p.urn).limit(1).maybeSingle();
+    if (data) return String(data.display_name);
+  }
+  for (const sl of slugs) {
+    const { data } = await supabase.from("message_ignore_list").select("display_name").eq("team_id", PIER_TEAM_ID).ilike("linkedin_slug", sl).limit(1).maybeSingle();
+    if (data) return String(data.display_name);
+  }
+  return null;
+}
+/** (c) evidence that an unmatched INBOUND is Pier outreach. Returns the evidence found (empty = none). */
+async function pierEvidence(p: Payload, candidates: Candidate[]): Promise<Record<string, unknown>> {
+  const ev: Record<string, unknown> = {};
+  if (p.threadUrl) {
+    const { data: t } = await supabase.from("linkedin_threads").select("contact_id").eq("team_id", PIER_TEAM_ID).eq("thread_url", p.threadUrl).not("contact_id", "is", null).limit(1).maybeSingle();
+    if (t?.contact_id) ev.thread_known_contact = t.contact_id;
+    const { data: o } = await supabase.from("outreach_log").select("id, contact_id").eq("team_id", PIER_TEAM_ID).eq("thread_url", p.threadUrl).eq("send_status", "Sent").limit(1).maybeSingle();
+    if (o?.id) ev.thread_has_our_sent_message = o.contact_id;
+  }
+  const occ = normName(p.occupationFrom);
+  if (occ) {
+    const hit = (await heldCompanyNames()).find((n) => (" " + occ + " ").includes(" " + n + " "));
+    if (hit) ev.sender_company_held = hit;
+  }
+  const strong = candidates.filter((c) => c.score >= CANDIDATE_EVIDENCE_MIN);
+  if (strong.length) ev.candidates_at_or_above = { min: CANDIDATE_EVIDENCE_MIN, n: strong.length };
+  return ev;
+}
+/** (d) nothing is discarded silently: every message neither filed nor queued is logged here with its reason. */
+async function logIgnored(p: Payload, key: string, reason: "own_message_unmatched" | "no_evidence_of_pier_outreach" | "permanent_ignore_list",
+  evidence: Record<string, unknown>, fromUnmatchedId: string | null = null): Promise<void> {
+  const { error } = await supabase.from("message_ignore_log").upsert({
+    team_id: PIER_TEAM_ID, external_key: key, source: p.source, channel: p.channel, thread_url: p.threadUrl || null,
+    counterpart_urn: p.urn, sender_name: `${p.firstnameFrom} ${p.lastnameFrom}`.trim() || null, sender_occupation: p.occupationFrom || null,
+    message_body: p.message, message_at: messageDateIso(p), is_from_me: p.isLastMessageFromMe, reason, evidence_checked: evidence,
+    payload: p, from_unmatched_id: fromUnmatchedId,
+  }, { onConflict: "team_id,external_key", ignoreDuplicates: true });
+  if (error) throw error;
 }
 
 // ---------------------------------------------------------------- Move to Monday alert (B8)
@@ -625,8 +688,8 @@ async function queueOrphan(p: Payload, key: string, candidates: Candidate[]): Pr
   return "queued";
 }
 
-type Counts = { processed: number; matched: number; own_threaded: number; queued: number; duplicates: number; skipped: number };
-const zero = (): Counts => ({ processed: 0, matched: 0, own_threaded: 0, queued: 0, duplicates: 0, skipped: 0 });
+type Counts = { processed: number; matched: number; own_threaded: number; queued: number; duplicates: number; skipped: number; ignored: number };
+const zero = (): Counts => ({ processed: 0, matched: 0, own_threaded: 0, queued: 0, duplicates: 0, skipped: 0, ignored: 0 });
 
 /** One inbox message through the ladder. Returns the outcome for the counts and for Make. */
 // deno-lint-ignore no-explicit-any
@@ -639,6 +702,8 @@ async function processPayload(body: any, counts: Counts): Promise<Record<string,
   const oldKey = await legacyKey(p);
   const dup = (await existingByKey(key)) ?? (oldKey !== key ? await existingByKey(oldKey) : null);
   if (dup) { counts.duplicates++; await noteThread(p, null); return { status: "duplicate", touch_id: dup }; }
+  const ignoredAs = await ignoreListHit(p);
+  if (ignoredAs) { counts.ignored++; await logIgnored(p, key, "permanent_ignore_list", { ignore_list: ignoredAs }); return { status: "ignored", reason: "permanent_ignore_list" }; }
   const m = await matchContact(p);
   if (m.contactId) {
     await learnAliases(m.contactId, counterpartyIds(p));
@@ -658,10 +723,21 @@ async function processPayload(body: any, counts: Counts): Promise<Record<string,
     const { data: q0 } = await supabase.from("unmatched_replies").select("id").eq("team_id", PIER_TEAM_ID).eq("external_key", oldKey).limit(1).maybeSingle();
     if (q0?.id) { counts.duplicates++; await noteThread(p, null); return { status: "already_queued", reason: "no_match" }; }
   }
+  // F22B.4(b): an own message that cannot be matched is not a reply. Never queued; logged with its candidates.
+  if (p.isLastMessageFromMe) {
+    counts.ignored++; await logIgnored(p, key, "own_message_unmatched", { candidates: m.candidates }); await noteThread(p, null);
+    return { status: "ignored", reason: "own_message_unmatched", candidates: m.candidates.length };
+  }
+  // F22B.4(c): an inbound is queued only with evidence that it is Pier outreach.
+  const ev = await pierEvidence(p, m.candidates);
+  if (!Object.keys(ev).length) {
+    counts.ignored++; await logIgnored(p, key, "no_evidence_of_pier_outreach", { candidates: m.candidates }); await noteThread(p, null);
+    return { status: "ignored", reason: "no_evidence_of_pier_outreach" };
+  }
   const q = await queueOrphan(p, key, m.candidates);
   if (q === "queued") counts.queued++; else counts.duplicates++;
   await noteThread(p, null);
-  return { status: q, reason: "no_match", candidates: m.candidates.length, is_from_me: p.isLastMessageFromMe, source: p.source };
+  return { status: q, reason: "no_match", evidence: ev, candidates: m.candidates.length, is_from_me: p.isLastMessageFromMe, source: p.source };
 }
 
 /** F22A.2(e): the scraper's degree writes contacts.connection_level ONLY (1..3). Never connection_status: degree is
@@ -796,6 +872,47 @@ Deno.serve(async (req) => {
       }
       console.log(JSON.stringify({ event: "inbox_sync_done", container_id: containerId, counts }));
       return json(200, { status: "done", counts });
+    }
+    if (action === "reprocess_queue") {
+      // F22B.4(a): every OPEN queue row through v27's rules. dry_run reports the outcome per row and writes nothing.
+      const dry = body?.dry_run === true;
+      const { data: rows } = await supabase.from("unmatched_replies").select("*").eq("team_id", PIER_TEAM_ID).eq("status", "open").limit(500);
+      const out: Array<Record<string, unknown>> = [];
+      for (const row of rows ?? []) {
+        const p = parsePayload(row.payload ?? {});
+        if (!p.message) p.message = String(row.message_body ?? "");
+        const who = `${row.sender_first_name ?? ""} ${row.sender_last_name ?? ""}`.trim() || "(unknown)";
+        try {
+          const ig = await ignoreListHit(p);
+          if (ig) {
+            if (!dry) { await logIgnored(p, row.external_key, "permanent_ignore_list", { ignore_list: ig }, row.id); await supabase.from("unmatched_replies").update({ status: "dismissed" }).eq("id", row.id); }
+            out.push({ id: row.id, who, own: p.isLastMessageFromMe, outcome: "ignore_list", detail: ig }); continue;
+          }
+          const m = await matchContact(p);
+          if (m.contactId) {
+            let touch: string | null = null;
+            if (!dry) {
+              await learnAliases(m.contactId, counterpartyIds(p));
+              const r = p.isLastMessageFromMe ? await fileOwnMessage(m.contactId, p, row.external_key) : await fileInbound(m.contactId, p, row.external_key);
+              touch = r.touch_id ?? null;
+              await supabase.from("unmatched_replies").update({ status: "assigned", assigned_contact_id: m.contactId, assigned_at: new Date().toISOString(), created_touch_id: touch }).eq("id", row.id);
+            }
+            out.push({ id: row.id, who, own: p.isLastMessageFromMe, outcome: "resolved_" + m.rung, contact_id: m.contactId, touch_id: touch }); continue;
+          }
+          if (p.isLastMessageFromMe) {
+            if (!dry) { await logIgnored(p, row.external_key, "own_message_unmatched", { candidates: m.candidates }, row.id); await supabase.from("unmatched_replies").update({ status: "dismissed" }).eq("id", row.id); }
+            out.push({ id: row.id, who, own: true, outcome: "own_message_to_ignore_log", candidates: m.candidates.length }); continue;
+          }
+          const ev = await pierEvidence(p, m.candidates);
+          if (!Object.keys(ev).length) {
+            if (!dry) { await logIgnored(p, row.external_key, "no_evidence_of_pier_outreach", { candidates: m.candidates }, row.id); await supabase.from("unmatched_replies").update({ status: "dismissed" }).eq("id", row.id); }
+            out.push({ id: row.id, who, own: false, outcome: "no_evidence_to_ignore_log" }); continue;
+          }
+          if (!dry && m.candidates.length) await supabase.from("unmatched_replies").update({ candidates: m.candidates }).eq("id", row.id);
+          out.push({ id: row.id, who, own: false, outcome: "stays_queued", evidence: ev });
+        } catch (e) { out.push({ id: row.id, who, outcome: "error", detail: (e as Error).message }); }
+      }
+      return json(200, { dry_run: dry, rows: out.length, results: out });
     }
     if (action === "replay_containers") {
       const ids: string[] = Array.isArray(body?.container_ids) ? body.container_ids.map(String) : [];
