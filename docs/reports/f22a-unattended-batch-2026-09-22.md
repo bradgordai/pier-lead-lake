@@ -95,9 +95,11 @@ Migration 132 (schema_migrations 20260922201224), commit 124ec2d.
   3. 16:37 Brad built "Pier Inbox Watcher (copy)" 9850348 with the right mapping, listening on hook bz7reab...
      The phantom's webhook is set to .../pvfyton1djs2sgrt4l9gjm5nsnslyh6m, which is NEITHER active Pier hook
      (hooks_get: 4389339 = bz7reab..., 4332353 = bx735...). The 19:45 run produced **zero executions** anywhere.
-     FAILURE POINT 2 = PhantomBuster webhook points at a hook no scenario owns. **BRAD: set phantom
-     7307653238072765's webhook to https://hook.eu2.make.com/bz7reab1u22b8p5s0v1hprhqotx7il95** (not done here:
-     phantom config is Brad's). CLAUDE.md section 12 has the wrong hook for this scraper.
+     FAILURE POINT 2 = PhantomBuster webhook pointed at a hook no scenario owns. **RESOLVED BY BRAD during the batch:**
+     at ~20:40 UTC the phantom's webhook reads .../bz7reab1u22b8p5s0v1hprhqotx7il95 (numberOfThreadsToScrape 50),
+     scenario 9850348 was edited 20:28 and executed 20:41 (202 ops, success), 50 payloads reached v26 live
+     (0 replies, 4 own messages filed, 6 queued). A replay of that container = 50/50 duplicates. CLAUDE.md section
+     12 still names the old hook (pvfyton...) for this scraper; update it.
   4. FIX + RECOVERY: v26 reads both shapes; replay of container 650785751803234 filed his reply (touch f7a3c0bc,
      channel LinkedIn inMail, classified "Wrong person") and drafted the reply below. 20 junk "(no text)" queue rows
      from 14:55/15:46 dismissed (audit phase f22a_2b_junk_queue).
@@ -234,10 +236,83 @@ first DM 0 pending (16 approved), replies 0 pending.
 (A) CONSENT LAYER UNTOUCHED. 1,770 evaluations before, 1,772 after (one new contact), channel LinkedIn DM, both
     request types. promise_of_quiet 17=17, dnc_or_opted_out 67=67, contact_parked 69=69, pending_ruling 41=41
     (x2 request types); allowance_exhausted 2=2. Changed: P581 Deiminger chaser PASS->contact_replied (reply filed by
-    this batch); P538 Friedrich thread_text_missing->PASS and P562 Mian contact_replied->PASS (Oliver sent Follow ups
-    at 20:41, live); P949 Wehner group_sibling_engaged->PASS x2 (live data, CR 20:04). fn_evaluate_gates not edited.
+    this batch); P538 Friedrich thread_text_missing->PASS and P562 Mian contact_replied->PASS: CAUSED BY THIS BATCH'S
+    CODE, not by live sends. The Sales Nav scraper (webhook fixed by Brad ~20:40) fed capture v26, which filed 4 of
+    Oliver's HISTORIC hand-sent messages (P538 1 Sep InMail, P558 4 Sep, P562 16 Sep, P031 16 Sep; no duplicates)
+    and applied the existing 'Oli answered: chase restarts' rule (P562 chase_state replied -> awaiting_reply).
+    **Both P538 and P562 are now chaser-eligible; the 06:15 engine may DRAFT a chaser for them (draft only).**
+    Brad: check both before Oliver approves anything; P949 Wehner group_sibling_engaged->PASS x2 (live data, CR 20:04). fn_evaluate_gates not edited.
     Recorded in migration_audit phase f22a_consent_proof.
 (B) PRIORITY: no function reading priority was edited (drafter only passes it through unchanged).
 (C) Cost: section 1c.
 (D) Weekly CRs 71; CR rows created during the batch 0; accepted/already connected 171. F22A.3 wrote nothing.
     Migration 136 changed draft_status only; the CR count reads send_status.
+
+## 8. F22A.8 Manual trigger buttons
+EVIDENCE: migration 135 intake_runs (commit fda3e5e); Edge Function intake-refresh v1 (ezbr 539f54a0...) deployed,
+read back and compared by eye (inline response, not scripted); `status` returned all four intakes with their last
+phantom containers; `launch` dry run returned would_launch; NO real launch was made. Agents: sales_nav_leads
+2343586699386601, connection_acceptances 5421527801446685 (Pier Connection Watcher, not named in CLAUDE.md),
+sales_nav_inbox 7307653238072765, linkedin_inbox 2840951049581867. The function launches the phantom only (saved
+argument, key server-side), never a Make webhook; 15-minute rate limit per intake; one at a time across all four
+(any open run here OR any running container); outcomes found / nothing_found / error. Lovable 9dce266: strip on
+Today ("Refresh now, 1 manual run per 15 min"), four buttons with last-run time; Chrome render confirmed; no button
+pressed. Published (#5).
+
+## 9. F22A.9 Backlog
+(a) pg_cron: jobs 2, 3, 5 (and 7) hold NO literal bearer and read Vault (migration 125). Proof of 200s: job 5 06:15 ->
+    15 drafter calls + 15 drafts; job 3 08:00 -> daily-insight call logged. Job 2 has not run since the switch; its
+    first run is Sun 27 Sep 06:00. Brad's rotation is unblocked.
+(b) i053: applied 18 Sep (migration 112). touch_merge_log now has 231 rows (F20 said 124): gap noted, not investigated.
+(c) The "138 to Cancelled" is WRONG (F20 proved them real sends) and is replaced by (h). Nothing cancelled.
+(d)(e)(f) Lovable 6ba9201 (Lovable self-published it: counted as #6): history lists = send_status Sent OR Reply only;
+    open drafts in their own "Open drafts, not yet sent" section; red "Company not deep researched" badge on draft card
+    and list rows, draft fully actionable (Chrome: Joan Corral Ramírez); "All" renamed "History" (1,273), not default,
+    100-row pages with count, summary line from head counts.
+(g) Lovable 9d7dcb0: bulk approve with confirmation (row-by-row through the snapshot path); bulk send on the Approved
+    tab: one confirmation listing recipient/company/channel, sequential awaited sendNowFn calls (queue spaces them),
+    cap 25, pipeline rows excluded, per-row results dialog. Chrome: selection now on the Approved tab. NOT exercised.
+    Published (#7).
+(h) Migration 136: 136 Sent+superseded rows -> draft_status sent; send_status unchanged (asserted in-migration);
+    0 remain; Sent tab 957 -> 1,097 in Chrome.
+(i) Improvement log: realtime publication already holds improvements / improvement_comments / improvement_activity
+    (verified). UI: see L8 below.
+(j) Drafter deploy: RAN, not refused. v42 -> v43 (section 1).
+(k) Still described as proposed / not applied in docs/reports, checked against live:
+    - F19.7 scoring storage + "contacts raise the score" weighting: PROPOSED, Prompt B (not started, as instructed).
+    - F17.1 INTERNAL_APP_SECRET rotation: Brad (now unblocked by (a)).
+    - generate-daily-insight still secret-only at v17 (CLAUDE.md): unchanged.
+    - F18.8 "update-contact-on-cr-accepted local edit not deployed": STALE, live v20 contains the cr_accepted_at stamp.
+      NEW FINDING: it matches only by slug/url, not linkedin_urn, so Sales-Nav-only contacts can miss acceptances.
+    - F18 route 5 / F19.6 reply sweep "not deployed": chase-engine v13 is live (F20); not re-verified tonight.
+    - Migration 109 drainer cron "not applied": superseded by 124 (send-queue-drain job 7 is live).
+    - F17.4 hard refusal of an unattributed Accepted; the 120 stamp trigger re-stamping an 'Already connected' relabel;
+      F17.2 (b) cheap safe pass: still open.
+
+### L8 — F22A.9(i) Improvement log UI
+Lovable 211617f: created date + time (Europe/London) on every card and in the detail; Created filter (All time / 24h /
+7d / 30d); session-only Undo / Redo (buttons + Cmd/Ctrl+Z, Shift for redo) built from improvement_activity before/after;
+improvementRestoreFn writes ONLY the 16 whitelisted columns (reviewed in Lovable's reply code); undo of an add HIDES the
+row, never deletes; undo of a delete re-inserts with the same id where RLS allows. Realtime on the three tables with a
+30-second refetch fallback and a "Live updates off" note. No schema change. Chrome (preview, read-only): 141 items, dates
+render, "All time" filter present, Undo/Redo buttons present and disabled (nothing done). Undo NOT exercised. Published (#8).
+
+## 10. Verify before stopping
+- Published URL: https://pier-lead-lake.lovable.app — 8 publishes: #1 1a0e8c2, #2 9b4c139, #3 a852d01, #4 ca41ffc,
+  #5 9dce266, #6 6ba9201 (self-published by Lovable), #7 9d7dcb0, #8 211617f.
+- Evidence per task: .1 deploy v43 byte-identical + before/after drafts (1b); .2 v26 deploy + replay + Deiminger filed
+  and drafted; .3 SKIPPED (hasPendingInvitation absent, keys listed in 3); .4-.5 migrations 133/134 + Chrome; .6 Lovable
+  + Chrome; .7 Lovable + Chrome counts; .8 migration 135 + intake-refresh dry run + Chrome; .9 as listed above.
+- COULD NOT VERIFY: no real send, approve or bulk action exercised; dialogs (feedback reason, bulk send) not opened in
+  Chrome; no intake launched; cron job 2 first run is 27 Sep; intake-refresh byte-compare by eye not script; undo/redo
+  not exercised.
+
+## 11. Flags (not fixed, out of scope)
+- CLAUDE.md §8: connection_level is an enum (1st/2nd/3rd degree | Not connected), no "Out of network". §12 names hooks
+  that Brad has since repointed (Sales Nav Inbox -> bz7reab...).
+- Make scenario 9850348 holds a literal bearer in its module config.
+- Make 9589633 (Sales Nav Watcher) was turned off by Brad at 20:06; the 422 fix is still pending F22A.3.
+- P701 draft carries a doubled name line (pre-v43 draft).
+- Deiminger's reply draft subject is ugly and Deiminger has left the company; Oliver's send was skipped by PhantomBuster.
+- P538 / P562 became chaser-eligible because v26 filed Oliver's historic messages: they may get chaser drafts at 06:15.
+- touch_merge_log 231 rows vs 124 reported in F20.
