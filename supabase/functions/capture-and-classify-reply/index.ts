@@ -1,4 +1,5 @@
-// Edge Function: capture-and-classify-reply  (v28, 2026-09-23: company evidence needs a multi-word or 8+ char name. v27, 2026-09-23: F22B.4 the queue holds only plausible Pier replies:
+// Edge Function: capture-and-classify-reply  (v29, 2026-09-23: F22B.5 non-sales replies (Left company, Wrong person,
+// Referral) get no sales draft; trigger quote stored; a referral's named person is captured. v28, 2026-09-23: company evidence needs a multi-word or 8+ char name. v27, 2026-09-23: F22B.4 the queue holds only plausible Pier replies:
 // name matching makes CANDIDATES only, never a match; an unmatched OWN message is never queued; an unmatched inbound is
 // queued only with evidence of Pier outreach, otherwise it goes to message_ignore_log with the reason; a permanent
 // ignore list; action reprocess_queue re-runs the open queue. URN ties go to the oldest live contact.
@@ -90,18 +91,24 @@ You are classifying an inbound LinkedIn reply Oli Muller (Pier Insurance) receiv
 
 Given the prior thread context + this new reply, return ONLY a JSON object:
 {
-  "reply_classification": "Positive interest" | "Neutral" | "Objection" | "Not interested" | "Out of office" | "Wrong person" | "Do not contact" | "Booked meeting" | "Uncategorised",
+  "reply_classification": "Positive interest" | "Neutral" | "Objection" | "Not interested" | "Out of office" | "Wrong person" | "Left company" | "Referral" | "Do not contact" | "Booked meeting" | "Uncategorised",
   "outcome": "Replied / Accepted" | "Rejected / Bounced" | "Withdrawn" | "No reply" | "Awaiting reply",
   "reasoning": "one-sentence justification",
   "confidence": 0-100,
+  "trigger_quote": "the ONE line of the reply, copied verbatim, that decided the classification",
+  "referral": {"name": "the person they point us to, as written", "title": "their role if given, else null"} or null,
   "state_of_play": ["2-4 short bullets for the operator's contact notes: where the conversation now stands, the key facts from this reply (who they are, what they said, what is open, any referral or date they gave) and what we are waiting for. Plain facts, no advice."]
 }
 
 CONTACT NOTES in the request are context, never permission: the gates always override anything a note says, and a note tied to a date that has passed is history, not a live instruction.
 
+NON-SALES REPLIES (F22B.5): "Left company" = they say they no longer work there / have moved on (e.g. "ich bin nicht mehr für ... tätig", "I left X in June"). "Wrong person" = still there but not responsible, and names nobody. "Referral" = they point us to a named other person (use "Referral" whenever a name is given, even if they are also the wrong person). These three are about the CONTACT, not the offer.
+
 Never invent values. If ambiguous, use "Uncategorised" and confidence < 50. Output the JSON object and nothing else.`;
 
-const VALID_RC = new Set(["Positive interest", "Neutral", "Objection", "Not interested", "Out of office", "Wrong person", "Do not contact", "Booked meeting", "Uncategorised"]);
+const VALID_RC = new Set(["Positive interest", "Neutral", "Objection", "Not interested", "Out of office", "Wrong person", "Left company", "Referral", "Do not contact", "Booked meeting", "Uncategorised"]);
+/** F22B.5(b): replies about the CONTACT, not the offer. They never get a sales reply draft; the card shows them in red. */
+const NON_SALES_RC = new Set(["Left company", "Wrong person", "Referral"]);
 const VALID_OUTCOME = new Set(["Awaiting reply", "Replied / Accepted", "No reply", "Rejected / Bounced", "Withdrawn"]);
 // F15.8: statuses earlier in the funnel than "In conversation". A reply from any of these moves the
 // contact to In conversation regardless of classification. Everything else is left alone: consent
@@ -465,7 +472,9 @@ async function raiseMoveToMondayAlert(companyId: string | null, touchRowId: stri
 }
 
 // ---------------------------------------------------------------- classification
-function classifyFromText(text: string): { reply_classification: string; outcome: string; reasoning: string; confidence: number; state_of_play: string[] } | null {
+type Cls = { reply_classification: string; outcome: string; reasoning: string; confidence: number; state_of_play: string[];
+  trigger_quote: string | null; referral: { name: string; title: string | null } | null };
+function classifyFromText(text: string): Cls | null {
   try {
     let t = text.trim().replace(/^```[a-z]*\s*/i, "").replace(/```$/i, "").trim();
     const brace = t.match(/\{[\s\S]*\}/);
@@ -480,7 +489,10 @@ function classifyFromText(text: string): { reply_classification: string; outcome
     const reasoning = typeof obj?.reasoning === "string" ? obj.reasoning.slice(0, 500) : "";
     const state_of_play = Array.isArray(obj?.state_of_play)
       ? obj.state_of_play.filter((b: unknown) => typeof b === "string" && String(b).trim()).slice(0, 4).map((b: string) => b.trim()) : [];
-    return { reply_classification: rc, outcome, reasoning, confidence, state_of_play };
+    const trigger_quote = typeof obj?.trigger_quote === "string" && obj.trigger_quote.trim() ? obj.trigger_quote.trim().slice(0, 500) : null;
+    const refName = typeof obj?.referral?.name === "string" ? obj.referral.name.trim() : "";
+    const referral = refName ? { name: refName.slice(0, 200), title: typeof obj.referral.title === "string" ? obj.referral.title.trim().slice(0, 200) || null : null } : null;
+    return { reply_classification: rc, outcome, reasoning, confidence, state_of_play, trigger_quote, referral };
   } catch { return null; }
 }
 
@@ -515,7 +527,7 @@ async function classify(contact: any, touchRowId: string, messageBody: string, r
   const name = `${contact.first_name ?? ""} ${contact.last_name ?? ""}`.trim();
   const userPrompt = `CONTACT: ${name}\n\n${notesBlock}\n\nPRIOR THREAD (oldest first; OLI = Oli's outbound, PROSPECT = their replies):\n${priorThread || "(no prior messages on record)"}\n\nNEW INBOUND REPLY TO CLASSIFY\nFrom: ${name}\nReceived: ${receivedIso}\nMessage:\n${messageBody}\n\nReturn ONLY the JSON classification object.`;
 
-  let cls = { reply_classification: "Uncategorised", outcome: "Replied / Accepted", reasoning: "", confidence: 0, state_of_play: [] as string[] };
+  let cls: Cls = { reply_classification: "Uncategorised", outcome: "Replied / Accepted", reasoning: "", confidence: 0, state_of_play: [], trigger_quote: null, referral: null };
   let genError = "";
   try {
     if (!ANTHROPIC_API_KEY) throw new Error("ANTHROPIC_API_KEY missing");
@@ -613,7 +625,15 @@ async function fileInbound(contactId: string, p: Payload, key: string): Promise<
   const touchRowId = inserted.id;
 
   const { cls, genError } = await classify(contact, touchRowId, body, when);
-  await supabase.from("outreach_log").update({ reply_classification: cls.reply_classification, outcome: cls.outcome, reply_confidence: cls.confidence, reply_reasoning: cls.reasoning || null }).eq("id", touchRowId);
+  await supabase.from("outreach_log").update({ reply_classification: cls.reply_classification, outcome: cls.outcome, reply_confidence: cls.confidence, reply_reasoning: cls.reasoning || null, reply_trigger_quote: cls.trigger_quote }).eq("id", touchRowId);
+  const nonSales = NON_SALES_RC.has(cls.reply_classification);
+  // F22B.5(c): a referral's named person is captured so they can be sourced rather than lost in a thread.
+  if (cls.referral) {
+    try {
+      await supabase.from("contact_referrals").insert({ team_id: PIER_TEAM_ID, from_contact_id: contact.id, from_touch_id: touchRowId,
+        company_id: contact.company_id ?? null, named_person: cls.referral.name, named_title: cls.referral.title, note: cls.trigger_quote, created_by: null });
+    } catch (e) { console.error(JSON.stringify({ event: "referral_capture_failed", contact_id: contact.id, message: (e as Error).message })); }
+  }
 
   // Notes: refresh the AI state of play under the marker.
   if (cls.state_of_play.length) {
@@ -651,7 +671,10 @@ async function fileInbound(contactId: string, p: Payload, key: string): Promise<
   // fn_evaluate_gates with p_requested='reply' (a refusal is logged there, not here) and dedupes
   // against an existing pending reply draft. Best effort: the filing above is the primary success.
   let replyDraft: unknown = null;
-  try {
+  // F22B.5(b): a non-sales reply (Left company, Wrong person, Referral) gets NO sales draft. The card flags it in red
+  // with the quoted line; the courteous "who is the right person now?" draft type waits for Brad's wording.
+  if (nonSales) console.log(JSON.stringify({ event: "reply_draft_skipped_non_sales", contact_id: contact.id, classification: cls.reply_classification }));
+  else try {
     const resp = await fetch(`${SUPABASE_URL}/functions/v1/generate-draft-from-context`, {
       method: "POST",
       headers: { authorization: `Bearer ${OUTBOUND_SECRET}`, "content-type": "application/json" },
