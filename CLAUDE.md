@@ -66,8 +66,9 @@ so far. Confirm every literal in a predicate exists before quoting a count. Meas
 "To Review" is companies.opportunity_status; "Needs review" is contacts.outreach_status. Different fields.
 
 ## 8. The two connection fields
-contacts.connection_level is DEGREE (free text: 1st degree / 2nd degree / 3rd degree / Out of network,
-often a stale snapshot). contacts.connection_status is INVITATION STATE (the enum above). Never conflate
+contacts.connection_level is DEGREE, an ENUM (1st degree | 2nd degree | 3rd degree | Out of network; a stale
+snapshot). Its legacy value "Not connected" is refused by fn_contacts_degree_guard (138): that is a status.
+Sales Nav sends "Out-of-Network"; v26 stores "Out of network". connection_status is INVITATION STATE. Never conflate
 them. A connection request to an out-of-network person is allowed; only a free DM needs a 1st-degree
 connection. A "reply" received by InMail or email proves nothing about connection.
 
@@ -103,25 +104,24 @@ section 8.1(g); the "To Review" default stands anyway.
   after CR, cold InMail, reply sweep), send-approved-draft (gates + queue + PhantomBuster launch),
   send-approved-callback (the ONE place a send becomes Sent or Cancelled; idempotent on phantom_run_id),
   capture-and-classify-reply, upsert-contact-from-sales-nav, update-contact-on-cr-accepted, ai-edit-draft.
-- Lovable owns every screen and calls Edge Functions with the signed-in user's JWT (except
-  generate-daily-insight, still secret-only at v17).
+  Also score-company, distill-learned-corrections (cron INACTIVE), proofread-drafts (Haiku, flags only).
+- Lovable owns every screen; calls Edge Functions with the user's JWT (except generate-daily-insight, secret-only v17).
 - PhantomBuster SENDS: 5691059901018698 Pier LinkedIn Message Sender (DM), 8651232052097344 Pier Sales
   Navigator Message Sender (InMail), 7500783933729451 Pier LinkedIn Auto Connect (CR).
 - PhantomBuster SCRAPES: 2343586699386601 Pier Sales Nav Watcher, repointed by Brad on 22 Sep and now
-  reading the Lovable Master List correctly (100 profiles found; the Make run 422s on "Out-of-Network",
-  unfixed). Two SEPARATE inbox scrapers, and BOTH run, because a Sales Navigator InMail thread and a
-  normal LinkedIn DM thread are different inboxes and neither shows the other (this is why InMail replies
-  were invisible until 22 Sep):
+  reading the Lovable Master List ("Out-of-Network" 422 fixed in v26, 23 Sep; 22 Sep run made 68 duplicates, NOT merged).
+  Two SEPARATE inbox scrapers, BOTH run: a Sales Nav InMail thread and a normal LinkedIn DM thread are
+  different inboxes and neither shows the other (why InMail replies were invisible until 22 Sep):
   - 7307653238072765 Pier Sales Navigator Inbox Scraper -> Make hook ending pvfyton1djs2sgrt4l9gjm5nsnslyh6m.
     Reads InMail threads. Payload: threadUrl, lastMessageDate, lastMessageType, lastMessageBody,
     lastMessageSubject, isLastMessageFromMe, totalMessageCount, unreadMessageCount, isArchived,
-    restriction, timestamp (unix seconds as a STRING), participants[] with a NUMBER degree.
+    restriction, timestamp (Make's run time as an ISO string, not the message time), participants[] with a NUMBER degree.
   - 2840951049581867 Pier LinkedIn Inbox Scraper -> Make hook ending bx735w393em1h9ig9okgyjgd9cmx1p8h.
     Reads the normal LinkedIn inbox. Different payload shape, separate Make scenario, same destination
     (capture-and-classify-reply).
 - Make WATCHES (team 586107): 9589633 Pier Sales Nav Watcher (webhook from PhantomBuster ->
   upsert-contact-from-sales-nav, hardcoded listName "P0 Sales Nav List"), the connection watcher, the
-  two inbox watcher scenarios (one per scraper above, 4-hourly), and 9714524 Pier Send Callback (webhook -> send-approved-callback; to be
+  inbox watchers (instant webhooks; InMail one is 9850348, bearer = scoped inbound secret, typed in the module), and 9714524 Pier Send Callback (webhook -> send-approved-callback; to be
   replaced by PhantomBuster calling the function directly with ?auth=). Make ops are metered.
 
 ## 13. Live gotchas
