@@ -7,6 +7,7 @@ import { callAnthropicWithSentinel, BudgetExceededError } from "./_shared/anthro
 // F10 (v32): owner signs, SENT-only thread context, created_by.
 // F15.2 (v33, 2026-09-15): routing matrix enforced and asserted for every caller (see ROUTING MATRIX block).
 // F16.16 (v38, 2026-09-15): a reply for a company with an engaged group sibling carries a visible GROUP COLLISION note instead of a refusal.
+// F22B.11(c) (v44, 2026-09-23): the German register (du/Sie) comes from the thread first, the Formality field second.
 // F16.3 (v36, 2026-09-15): a reply drafted for an unresearched company carries a visible note in narrative and guardrails.
 // F15.6/F15.9 (v34-v35, 2026-09-15): voice_assets stack (layers 1-3, layer 4 only for r4/r8) with version stamping;
 // context per type (opener: company+contact; chaser: opener in full + its narrative/guardrails + earlier chasers;
@@ -108,8 +109,40 @@ function forwardDirective(m: { channel: string; touch_type: string; intent: stri
 }
 // Shape 5 (Oli test day): the register lives on the contact (workbook Formality). It is
 // passed explicitly so a German draft cannot drift between Sie and du across the call.
-function registerLine(formality: string | null | undefined, language: string | null | undefined): string {
+// F22B.11(c) (v44, 2026-09-23): i136. The THREAD decides the German register, the Formality field is only the fallback:
+// a thread already on du was being told "Sie throughout" whenever the field said Formal. Their latest reply wins (how
+// they address us), then our latest message, then the field. Case matters: "Sie"/"Ihnen" capitalised mid-sentence are
+// formal; du/dich/dir/dein-/euch/euer-/eur- are informal. A message carrying both, or neither, decides nothing.
+const DU_RE = /\b(du|dich|dir|dein|deine|deinen|deinem|deiner|deines|euch|euer|eure|euren|eurem|eurer)\b/i;
+const SIE_RE = /(?:^|[^.!?\n]\s)(Sie|Ihnen|Ihre|Ihren|Ihrem|Ihrer)\b/;
+export function messageRegister(text: string | null | undefined): "du" | "Sie" | null {
+  const t = String(text ?? "");
+  if (!t.trim() || detectLanguage(t) !== "DE") return null; // "du" is also French; only German messages count
+  const du = DU_RE.test(t), sie = SIE_RE.test(t);
+  return du && !sie ? "du" : sie && !du ? "Sie" : null;
+}
+type RegRow = { touch_type?: string | null; touch_date?: string | null; reply_content?: string | null; message_body?: string | null; sent_body?: string | null };
+export function threadRegister(rows: RegRow[]): { register: "du" | "Sie"; source: string } | null {
+  const byDate = [...rows].sort((a, b) => String(b.touch_date ?? "").localeCompare(String(a.touch_date ?? "")));
+  for (const inbound of [true, false]) {
+    for (const r of byDate) {
+      if ((r.touch_type === "Reply") !== inbound) continue;
+      const reg = messageRegister(inbound ? (r.reply_content ?? r.message_body) : (r.sent_body ?? r.message_body));
+      if (reg) return { register: reg, source: `${inbound ? "their reply" : "our message"} of ${r.touch_date ?? "unknown date"}` };
+    }
+  }
+  return null;
+}
+function registerLine(formality: string | null | undefined, language: string | null | undefined,
+  thread?: { register: "du" | "Sie"; source: string } | null): string {
   const lang = String(language ?? "").toUpperCase();
+  if (lang === "DE" && thread) {
+    const clash = (thread.register === "du" && formality === "Formal") || (thread.register === "Sie" && formality === "Informal")
+      ? ` (the contact's Formality field says ${formality}; the thread wins)` : "";
+    return thread.register === "du"
+      ? `du (informal): the thread already uses du, ${thread.source}${clash}. Use du throughout, never Sie.`
+      : `Sie (formal): the thread uses Sie, ${thread.source}${clash}. Use Sie throughout, never du.`;
+  }
   if (formality === "Informal") return lang === "DE" ? "du (informal). Use du throughout, never Sie." : "informal, first-name terms.";
   if (formality === "Formal") return lang === "DE" ? "Sie (formal). Use Sie throughout, never du." : "formal and courteous.";
   return lang === "DE" ? "not recorded: default to Sie unless the prior thread already uses du." : "not recorded: match the prior thread.";
@@ -574,6 +607,9 @@ Deno.serve(async (req) => {
       const who = String(r.sent_by ?? "").trim() || "us";
       return `- ${date} ${who}: ${subj}${body}`;
     };
+    // F22B.11(c): the whole history (not only the recent window) decides the register.
+    const threadReg = threadRegister(allPrev as RegRow[]);
+    console.log(JSON.stringify({ event: "register_resolved", contact_id: contact.id, language: target.language, formality: contact.formality ?? null, thread: threadReg }));
     let threadText: string;
     // F15.6: what produced the opener travels with the chase. draft_narrative / draft_guardrails are
     // persisted on every agent draft since v28 and survive dispatch on the same row.
@@ -697,7 +733,7 @@ Deno.serve(async (req) => {
     } catch (e) {
       console.warn(JSON.stringify({ event: "guidance_notes_unavailable", contact_id: contact.id, message: (e as Error).message ?? String(e) }));
     }
-    const userPrompt = `DRAFT REQUEST\n\nTrigger: ${triggerReason}\nMessage type: ${mapped.touch_type} via ${mapped.channel}\nChannel: ${mapped.channel}\nIntent: ${mapped.intent}\nPath: ${path}\nFrame: ${frame}\nArc: ${arc}\n\nCONTACT\nName: ${contact.first_name ?? ""} ${contact.last_name ?? ""}\nTitle: ${contact.job_title ?? ""}\nSeniority: ${contact.seniority ?? ""}\nFunction: ${contact.function ?? ""}\nLocation: ${contact.location ?? ""}\nLinkedIn URL: ${contact.linkedin_url ?? ""}\nLanguage: WRITE IN ${LANG_NAMES[target.language] ?? target.language} (${target.language}). Reason: ${target.reason}. This overrides the contact's Language field.\nRegister: ${registerLine(contact.formality, target.language)}\n\nCOMPANY\nName: ${co.company_name ?? ""}\nCountry: ${co.country ?? ""}\nCategory: ${Array.isArray(co.category) ? co.category.join(", ") : (co.category ?? "")}\nPriority: ${co.priority ?? ""}\nIndustry: ${co.industry ?? ""}\nProduct line: ${co.product_line ?? ""}\nInsurance offered: ${co.insurance_offered ?? ""}\nInsurance provider: ${co.insurance_provider ?? ""}\nCoverage summary: ${co.coverage_summary ?? ""}\nUSP notes: ${co.usp_notes ?? ""}\nAdditional notes: ${co.additional_notes ?? ""}\nEstimated revenue: ${co.estimated_revenue_gbp ?? ""}\nEmployees: ${co.employees ?? ""}\nMonthly visits: ${co.monthly_visits ?? ""}\n\n${notesBlock}${guidanceBlock}\n\nPREVIOUS OUTREACH (background only - never mention it in the message)\n${threadText}\n\nTASK\nWrite the single ${mapped.channel} message ${sender} should send to this contact now, applying the loaded voice stack (rules, terminology, the channel architect${layer4Type ? ", and Oliver's own voice for this touch type" : ""}). This message is a "${mapped.touch_type}": ${mapped.intent} If prior outreach exists, write a natural forward message (re-engagement) - never a first-touch opener and never a comment on the history.\n\n${signOffInstruction}\n${target.language === "DE" ? "\nGERMAN SPELLING: write real umlauts and Eszett: ä ö ü Ä Ö Ü ß. NEVER transliterate to ae / oe / ue / ss, even if the notes above are written that way (for a Swiss contact ss replaces ß only; ä ö ü stay).\n" : ""}\nReturn ONLY the JSON object described in the drafting directive. The "message" value is what ${sender} sends: no preamble, no meta-commentary, no notes about prior messages, no subject line (the subject is set separately).`;
+    const userPrompt = `DRAFT REQUEST\n\nTrigger: ${triggerReason}\nMessage type: ${mapped.touch_type} via ${mapped.channel}\nChannel: ${mapped.channel}\nIntent: ${mapped.intent}\nPath: ${path}\nFrame: ${frame}\nArc: ${arc}\n\nCONTACT\nName: ${contact.first_name ?? ""} ${contact.last_name ?? ""}\nTitle: ${contact.job_title ?? ""}\nSeniority: ${contact.seniority ?? ""}\nFunction: ${contact.function ?? ""}\nLocation: ${contact.location ?? ""}\nLinkedIn URL: ${contact.linkedin_url ?? ""}\nLanguage: WRITE IN ${LANG_NAMES[target.language] ?? target.language} (${target.language}). Reason: ${target.reason}. This overrides the contact's Language field.\nRegister: ${registerLine(contact.formality, target.language, threadReg)}\n\nCOMPANY\nName: ${co.company_name ?? ""}\nCountry: ${co.country ?? ""}\nCategory: ${Array.isArray(co.category) ? co.category.join(", ") : (co.category ?? "")}\nPriority: ${co.priority ?? ""}\nIndustry: ${co.industry ?? ""}\nProduct line: ${co.product_line ?? ""}\nInsurance offered: ${co.insurance_offered ?? ""}\nInsurance provider: ${co.insurance_provider ?? ""}\nCoverage summary: ${co.coverage_summary ?? ""}\nUSP notes: ${co.usp_notes ?? ""}\nAdditional notes: ${co.additional_notes ?? ""}\nEstimated revenue: ${co.estimated_revenue_gbp ?? ""}\nEmployees: ${co.employees ?? ""}\nMonthly visits: ${co.monthly_visits ?? ""}\n\n${notesBlock}${guidanceBlock}\n\nPREVIOUS OUTREACH (background only - never mention it in the message)\n${threadText}\n\nTASK\nWrite the single ${mapped.channel} message ${sender} should send to this contact now, applying the loaded voice stack (rules, terminology, the channel architect${layer4Type ? ", and Oliver's own voice for this touch type" : ""}). This message is a "${mapped.touch_type}": ${mapped.intent} If prior outreach exists, write a natural forward message (re-engagement) - never a first-touch opener and never a comment on the history.\n\n${signOffInstruction}\n${target.language === "DE" ? "\nGERMAN SPELLING: write real umlauts and Eszett: ä ö ü Ä Ö Ü ß. NEVER transliterate to ae / oe / ue / ss, even if the notes above are written that way (for a Swiss contact ss replaces ß only; ä ö ü stay).\n" : ""}\nReturn ONLY the JSON object described in the drafting directive. The "message" value is what ${sender} sends: no preamble, no meta-commentary, no notes about prior messages, no subject line (the subject is set separately).`;
 
     let messageBody = "";
     let draftNarrative: string | null = null;
