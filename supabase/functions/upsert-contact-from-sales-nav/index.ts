@@ -1,4 +1,4 @@
-// Edge Function: upsert-contact-from-sales-nav  (v-F12 + F14.2 2026-09-14 heartbeat: two URL fields, degree stored, fail closed; F22B.2 Out-of-Network)
+// Edge Function: upsert-contact-from-sales-nav  (v-F12 + F14.2 2026-09-14 heartbeat: two URL fields, degree stored, fail closed; F22B.2 Out-of-Network); F24.3 v27 duplicate guard returns the existing contact
 //
 // Called by Make.com after the Sales Nav "List Export" phantom fires, once per lead.
 // Flow: verify shared secret -> dedupe (canonical linkedin_slug first, then URL) ->
@@ -479,6 +479,25 @@ Deno.serve(async (req) => {
       bizId = await nextContactId();
       const { data, error } = await supabase.from("contacts").insert({ ...baseRow, contact_id: bizId }).select("id").single();
       if (!error) { inserted = data; break; }
+      // F24.3 (v27, 2026-09-30): trg_contact_duplicate_guard (migration 154) refuses a second contact for the same
+      // linkedin_slug, or the same normalised name at the same company. The refusal is NOT a failure: the person is
+      // already in Supabase, so return THAT contact (and add this list to it), exactly like the dedupe rungs above.
+      // Never a 500 to Make (the Make scenario stops after 3 errors), and no second Connection request row is logged.
+      if (error.code === "23505" && String(error.message ?? "").startsWith("duplicate_contact")) {
+        const existingId = /existing_contact_uuid=([0-9a-f-]{36})/.exec(String(error.details ?? ""))?.[1] ?? null;
+        console.warn(JSON.stringify({ event: "duplicate_guard_hit", existing_contact: existingId, message: error.message }));
+        if (existingId) {
+          const { data: ex } = await supabase.from("contacts").select("id, company_id, sn_lists").eq("id", existingId).maybeSingle();
+          if (ex) {
+            const { error: updErr } = await supabase.from("contacts")
+              .update({ sn_lists: uniquePush(ex.sn_lists, listName), updated_at: new Date().toISOString() }).eq("id", ex.id);
+            if (updErr) console.error(JSON.stringify({ event: "duplicate_guard_list_append_failed", contact_id: ex.id, message: updErr.message }));
+            return json(200, { status: "updated", contact_id: ex.id, company_id: ex.company_id ?? null,
+              company_match_source: "unchanged", company_confidence: 0, action: "duplicate_guard_existing" });
+          }
+        }
+        return json(200, { status: "skipped", action: "duplicate_guard_refused", detail: String(error.message ?? "").slice(0, 300) });
+      }
       const collide = error.code === "23505" && `${error.message} ${error.details ?? ""}`.includes("contact_id");
       if (collide) { console.warn(JSON.stringify({ event: "contact_id_collision_retry", bizId, attempt })); continue; }
       throw error;
