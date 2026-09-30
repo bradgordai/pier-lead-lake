@@ -196,3 +196,21 @@ THE 12 EXISTING COLLISIONS, for Brad's ruling (NOT merged):
 | spusu | C456 spusu [spusu.at] (archived, 4 Sep) | C1388 spusu (24 Sep) |
 | swappie | C179 Swappie [swappie.com] (archived, 23 Jul) | C1384 Swappie (24 Sep) |
 | utopya | C202 Utopya [utopya.fr] (archived, 23 Jul) | C1339 Utopya [utopya.com] (9 Sep) |
+
+## Amendment: converting five gates to flags — ANALYSIS ONLY, nothing converted (Brad scopes it separately)
+WHO CALLS fn_evaluate_gates: five edge functions (generate-draft-from-context, chase-engine, send-approved-draft,
+capture-and-classify-reply, update-contact-on-cr-accepted); no SQL function calls it. Every caller treats ANY returned
+row as a refusal. So the shared change for all five is: fn_evaluate_gates returns a severity ('refuse' | 'flag'); the
+five callers proceed on 'flag' and persist it on the draft (e.g. outreach_log.gate_flags jsonb, with code, text and
+evaluated_at); send-approved-draft re-evaluates at launch and still stops on 'refuse' only. The refusals table would
+then record only refusals, and flags would live on the draft. The screens that show a flag reuse the F23 amber line
+(DraftWarnings) on: the Outreach list and thread panel, the contact Conversation tab, Today to-do, and the refusal-reason
+list in "What the system did".
+PER GATE:
+| gate | what it guards today | conversion work beyond the shared change | where the flag shows |
+|---|---|---|---|
+| group_sibling_engaged | new approach at a company whose LINKED company is already worked (replies exempt) | none extra: fn_group_siblings_engaged already returns names + why, the drafter already writes a GROUP COLLISION note for replies; reuse it for every touch | draft card: "Linked to X (in Monday / Contacted); one approach per group" |
+| cr_cooldown_active | a new connection request within 6 months of a withdrawal (cr_blocked_until) | nothing drafts CRs today (sent by hand or by phantom), so the flag has no draft to sit on: it belongs on the CONTACT card ("new CR blocked until <date>"). The 125 withdrawn CRs carry cr_blocked_until | contact card header |
+| allowance_exhausted | chaser N+1 on a channel once cap (DM 3 / InMail 1 / Email 3) is sent | ALSO enforced by fn_chase_candidates (protected; mentions caps), so converting the gate alone changes nothing: the engine never proposes the contact. Needs a change to a protected function | draft card: "4th chaser; allowance is 3" |
+| contact_replied | a chaser after the contact replied (chase_state='replied'), only for p_requested='chaser' | ALSO filtered by fn_chase_candidates / first-message / cold-InMail / reply candidates (all mention 'replied'). And, per Brad's Torsten finding, 'Follow up' (requested 'reply') bypasses it today, so as a flag it should cover follow-ups too | draft card: "They replied on <date>: answer the reply, not a chaser" |
+| country_unknown | EMAIL only: no stated country, so cold-email legality unknown | fn_send_ready_contacts mentions country. CAUTION: channel_illegal_in_market stays absolute, but with no country it cannot be evaluated, so a flag here means an email can go out with legality unestablished. Brad to confirm that is intended | email draft card: "Country unknown: cold-email legality not established" |
