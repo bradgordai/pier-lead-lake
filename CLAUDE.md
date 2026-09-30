@@ -73,9 +73,12 @@ them. A connection request to an out-of-network person is allowed; only a free D
 connection. A "reply" received by InMail or email proves nothing about connection.
 
 ## 9. The consent layer
-fn_evaluate_gates. These gates are absolute: promise_of_quiet, dnc_or_opted_out, company_archived,
-contact_parked, pending_ruling, group_sibling_engaged (the group guard). The research gate
-(company_not_deep_researched) is a WARNING since 21 Sep (team_settings.research_gate_warns_only).
+fn_evaluate_gates. SOFT GUARDRAILS (Brad, 30 Sep): block only on fact or consent; else flag, Oliver decides.
+ABSOLUTE: promise_of_quiet, dnc_or_opted_out, recipient_blocked, channel_illegal_in_market, thread_text_missing.
+TO BECOME FLAGS (not yet converted, still refuse today): group_sibling_engaged, cr_cooldown_active,
+allowance_exhausted, contact_replied, country_unknown. company_not_deep_researched is already a warning.
+Not yet ruled (still refuse): contact_parked, pending_ruling, company_archived. company_already_approached is a
+FLAG (v_draft_company_flags), never a gate.
 Any batch that touches drafting or state must prove the consent codes unchanged: refusal counts per
 reason_code before and after, every change accounted for. chase_state is read by eight functions
 including the gate; a repair to it needs a rolled-back dry run showing zero newly eligible contacts.
@@ -113,20 +116,17 @@ section 8.1(g); the "To Review" default stands anyway.
   Two SEPARATE inbox scrapers, BOTH run: a Sales Nav InMail thread and a normal LinkedIn DM thread are
   different inboxes and neither shows the other (why InMail replies were invisible until 22 Sep):
   - 7307653238072765 Pier Sales Navigator Inbox Scraper -> Make hook ending pvfyton1djs2sgrt4l9gjm5nsnslyh6m.
-    Reads InMail threads. Payload: threadUrl, lastMessageDate, lastMessageType, lastMessageBody,
-    lastMessageSubject, isLastMessageFromMe, totalMessageCount, unreadMessageCount, isArchived,
-    restriction, timestamp (Make's run time as an ISO string, not the message time), participants[] with a NUMBER degree.
+    InMail threads. Payload: threadUrl, lastMessage{Date,Type,Body,Subject}, isLastMessageFromMe, totalMessageCount,
+    unreadMessageCount, isArchived, restriction, timestamp (Make run time, ISO), participants[] (NUMBER degree).
   - 2840951049581867 Pier LinkedIn Inbox Scraper -> Make hook ending bx735w393em1h9ig9okgyjgd9cmx1p8h.
-    Reads the normal LinkedIn inbox. Different payload shape, separate Make scenario, same destination
-    (capture-and-classify-reply).
+    Normal LinkedIn inbox. Different payload, separate Make scenario, same destination (capture-and-classify-reply).
 - Make WATCHES (team 586107): 9589633 Pier Sales Nav Watcher (webhook from PhantomBuster ->
   upsert-contact-from-sales-nav, hardcoded listName "P0 Sales Nav List"), the connection watcher, the
   inbox watchers (instant webhooks; InMail one is 9850348, bearer = scoped inbound secret, typed in the module), and 9714524 Pier Send Callback (webhook -> send-approved-callback; to be
   replaced by PhantomBuster calling the function directly with ?auth=). Make ops are metered.
 
 ## 13. Live gotchas
-- The permission system can refuse a production deploy ("Production Deploy"). Do NOT retry or work around
-  it; report it and let Brad approve or run it.
+- A refused production deploy ("Production Deploy"): do NOT retry or work around it; report it to Brad.
 - Cowork sometimes applies migrations directly through the MCP; a file may need writing retrospectively
   (115, 121). `supabase migration list` cannot reconcile; scripts/check_migrations_reconcile.py does.
 - Background agents can die on a session rate limit mid-task; re-measure state before trusting anything.
