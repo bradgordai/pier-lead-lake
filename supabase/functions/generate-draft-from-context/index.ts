@@ -7,6 +7,7 @@ import { callAnthropicWithSentinel, BudgetExceededError } from "./_shared/anthro
 // F10 (v32): owner signs, SENT-only thread context, created_by.
 // F15.2 (v33, 2026-09-15): routing matrix enforced and asserted for every caller (see ROUTING MATRIX block).
 // F16.16 (v38, 2026-09-15): a reply for a company with an engaged group sibling carries a visible GROUP COLLISION note instead of a refusal.
+// F24.1 (v45, 2026-09-30): prior rejections of this contact + touch type go into the prompt (redraft must differ).
 // F22B.11(c) (v44, 2026-09-23): the German register (du/Sie) comes from the thread first, the Formality field second.
 // F16.3 (v36, 2026-09-15): a reply drafted for an unresearched company carries a visible note in narrative and guardrails.
 // F15.6/F15.9 (v34-v35, 2026-09-15): voice_assets stack (layers 1-3, layer 4 only for r4/r8) with version stamping;
@@ -733,7 +734,32 @@ Deno.serve(async (req) => {
     } catch (e) {
       console.warn(JSON.stringify({ event: "guidance_notes_unavailable", contact_id: contact.id, message: (e as Error).message ?? String(e) }));
     }
-    const userPrompt = `DRAFT REQUEST\n\nTrigger: ${triggerReason}\nMessage type: ${mapped.touch_type} via ${mapped.channel}\nChannel: ${mapped.channel}\nIntent: ${mapped.intent}\nPath: ${path}\nFrame: ${frame}\nArc: ${arc}\n\nCONTACT\nName: ${contact.first_name ?? ""} ${contact.last_name ?? ""}\nTitle: ${contact.job_title ?? ""}\nSeniority: ${contact.seniority ?? ""}\nFunction: ${contact.function ?? ""}\nLocation: ${contact.location ?? ""}\nLinkedIn URL: ${contact.linkedin_url ?? ""}\nLanguage: WRITE IN ${LANG_NAMES[target.language] ?? target.language} (${target.language}). Reason: ${target.reason}. This overrides the contact's Language field.\nRegister: ${registerLine(contact.formality, target.language, threadReg)}\n\nCOMPANY\nName: ${co.company_name ?? ""}\nCountry: ${co.country ?? ""}\nCategory: ${Array.isArray(co.category) ? co.category.join(", ") : (co.category ?? "")}\nPriority: ${co.priority ?? ""}\nIndustry: ${co.industry ?? ""}\nProduct line: ${co.product_line ?? ""}\nInsurance offered: ${co.insurance_offered ?? ""}\nInsurance provider: ${co.insurance_provider ?? ""}\nCoverage summary: ${co.coverage_summary ?? ""}\nUSP notes: ${co.usp_notes ?? ""}\nAdditional notes: ${co.additional_notes ?? ""}\nEstimated revenue: ${co.estimated_revenue_gbp ?? ""}\nEmployees: ${co.employees ?? ""}\nMonthly visits: ${co.monthly_visits ?? ""}\n\n${notesBlock}${guidanceBlock}\n\nPREVIOUS OUTREACH (background only - never mention it in the message)\n${threadText}\n\nTASK\nWrite the single ${mapped.channel} message ${sender} should send to this contact now, applying the loaded voice stack (rules, terminology, the channel architect${layer4Type ? ", and Oliver's own voice for this touch type" : ""}). This message is a "${mapped.touch_type}": ${mapped.intent} If prior outreach exists, write a natural forward message (re-engagement) - never a first-touch opener and never a comment on the history.\n\n${signOffInstruction}\n${target.language === "DE" ? "\nGERMAN SPELLING: write real umlauts and Eszett: ä ö ü Ä Ö Ü ß. NEVER transliterate to ae / oe / ue / ss, even if the notes above are written that way (for a Swiss contact ss replaces ß only; ä ö ü stay).\n" : ""}\nReturn ONLY the JSON object described in the drafting directive. The "message" value is what ${sender} sends: no preamble, no meta-commentary, no notes about prior messages, no subject line (the subject is set separately).`;
+    // F24.1 (v45, 2026-09-30): i183/i174, the rejection loop. A contact + touch type that Oliver rejected before must not
+    // get the same draft again: every prior rejection (his written reason, detail and the start of the rejected text) goes
+    // into the prompt as an explicit instruction. Nothing is suppressed; the redraft must be DIFFERENT, not absent.
+    let rejectionBlock = "";
+    let priorRejections = 0;
+    try {
+      const { data: rj, error: rjErr } = await supabase.from("outreach_log")
+        .select("updated_at, created_at, rejection_feedback, message_body")
+        .eq("team_id", PIER_TEAM_ID).eq("contact_id", contact.id).eq("touch_type", mapped.touch_type)
+        .eq("draft_status", "rejected").order("updated_at", { ascending: true }).limit(20);
+      if (rjErr) throw rjErr;
+      const rows = (rj ?? []) as Array<{ updated_at: string | null; created_at: string; rejection_feedback: { reason?: string; detail?: string } | null; message_body: string | null }>;
+      priorRejections = rows.length;
+      if (rows.length) {
+        rejectionBlock = `\n\nPRIOR REJECTIONS OF THIS "${mapped.touch_type}" FOR THIS CONTACT (${rows.length}). This was rejected before for the following reasons, do not repeat them. Take a genuinely different angle, opening and wording from every rejected draft:\n`
+          + rows.map((r, i) => {
+            const fb = r.rejection_feedback ?? {};
+            const why = [fb.reason, fb.detail].filter((x) => String(x ?? "").trim()).join(": ") || "no reason recorded";
+            const began = String(r.message_body ?? "").replace(/\s+/g, " ").trim().slice(0, 160);
+            return `${i + 1}. ${String(r.updated_at ?? r.created_at).slice(0, 10)} rejected because: ${why}${began ? `\n   The rejected draft began: "${began}"` : ""}`;
+          }).join("\n");
+      }
+    } catch (e) {
+      console.warn(JSON.stringify({ event: "prior_rejections_unavailable", contact_id: contact.id, message: (e as Error).message ?? String(e) }));
+    }
+    const userPrompt = `DRAFT REQUEST\n\nTrigger: ${triggerReason}\nMessage type: ${mapped.touch_type} via ${mapped.channel}\nChannel: ${mapped.channel}\nIntent: ${mapped.intent}\nPath: ${path}\nFrame: ${frame}\nArc: ${arc}\n\nCONTACT\nName: ${contact.first_name ?? ""} ${contact.last_name ?? ""}\nTitle: ${contact.job_title ?? ""}\nSeniority: ${contact.seniority ?? ""}\nFunction: ${contact.function ?? ""}\nLocation: ${contact.location ?? ""}\nLinkedIn URL: ${contact.linkedin_url ?? ""}\nLanguage: WRITE IN ${LANG_NAMES[target.language] ?? target.language} (${target.language}). Reason: ${target.reason}. This overrides the contact's Language field.\nRegister: ${registerLine(contact.formality, target.language, threadReg)}\n\nCOMPANY\nName: ${co.company_name ?? ""}\nCountry: ${co.country ?? ""}\nCategory: ${Array.isArray(co.category) ? co.category.join(", ") : (co.category ?? "")}\nPriority: ${co.priority ?? ""}\nIndustry: ${co.industry ?? ""}\nProduct line: ${co.product_line ?? ""}\nInsurance offered: ${co.insurance_offered ?? ""}\nInsurance provider: ${co.insurance_provider ?? ""}\nCoverage summary: ${co.coverage_summary ?? ""}\nUSP notes: ${co.usp_notes ?? ""}\nAdditional notes: ${co.additional_notes ?? ""}\nEstimated revenue: ${co.estimated_revenue_gbp ?? ""}\nEmployees: ${co.employees ?? ""}\nMonthly visits: ${co.monthly_visits ?? ""}\n\n${notesBlock}${guidanceBlock}${rejectionBlock}\n\nPREVIOUS OUTREACH (background only - never mention it in the message)\n${threadText}\n\nTASK\nWrite the single ${mapped.channel} message ${sender} should send to this contact now, applying the loaded voice stack (rules, terminology, the channel architect${layer4Type ? ", and Oliver's own voice for this touch type" : ""}). This message is a "${mapped.touch_type}": ${mapped.intent} If prior outreach exists, write a natural forward message (re-engagement) - never a first-touch opener and never a comment on the history.\n\n${signOffInstruction}\n${target.language === "DE" ? "\nGERMAN SPELLING: write real umlauts and Eszett: ä ö ü Ä Ö Ü ß. NEVER transliterate to ae / oe / ue / ss, even if the notes above are written that way (for a Swiss contact ss replaces ß only; ä ö ü stay).\n" : ""}\nReturn ONLY the JSON object described in the drafting directive. The "message" value is what ${sender} sends: no preamble, no meta-commentary, no notes about prior messages, no subject line (the subject is set separately).`;
 
     let messageBody = "";
     let draftNarrative: string | null = null;
@@ -830,7 +856,7 @@ Deno.serve(async (req) => {
     // test drafts in Pending Review for Oli to clean up.
     if (dryRun) {
       console.log(JSON.stringify({ event: "draft_dry_run", contact_id: contact.id, usage, estimated_cost_gbp: costGbp }));
-      return json(200, { status: "dry_run", contact_id: contact.id, sender, usage, voice_stack_versions: voiceStackVersions, layer4: layer4Type, research_note: researchNote, group_note: groupNote, estimated_cost_gbp: costGbp, narrative: draftNarrative, guardrails: draftGuardrails, message_preview: messageBody.slice(0, 300), message: messageBody, subject_line: subjectLine, lint_violations: lint.violations, lint_score: lint.score, draft_language: draftLanguage, draft_language_reason: draftLanguageReason, sign_off_appended: signOffAppended, touch_type: mapped.touch_type, channel: mapped.channel, effective_trigger: effectiveTrigger, routing_notes: routingNotes, thread_context: threadText.slice(0, 600) });
+      return json(200, { status: "dry_run", contact_id: contact.id, sender, usage, voice_stack_versions: voiceStackVersions, layer4: layer4Type, research_note: researchNote, group_note: groupNote, estimated_cost_gbp: costGbp, narrative: draftNarrative, guardrails: draftGuardrails, message_preview: messageBody.slice(0, 300), message: messageBody, subject_line: subjectLine, lint_violations: lint.violations, lint_score: lint.score, draft_language: draftLanguage, draft_language_reason: draftLanguageReason, sign_off_appended: signOffAppended, touch_type: mapped.touch_type, channel: mapped.channel, effective_trigger: effectiveTrigger, routing_notes: routingNotes, thread_context: threadText.slice(0, 600), prior_rejections: priorRejections, rejection_block: rejectionBlock, user_prompt: userPrompt });
     }
 
     const today = new Date().toISOString().slice(0, 10);
