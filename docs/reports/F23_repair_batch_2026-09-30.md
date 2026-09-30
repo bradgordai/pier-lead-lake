@@ -55,3 +55,45 @@ FLAGGED, not fixed: (1) an InMail skipped a SECOND time after being re-sent gets
 (fn_ledger_inmail_reverse refunds once per row). (2) Brad's finding: Torsten had chase_state='replied' (soft decline 23
 Sep) yet got four Follow up drafts and a real send on 29 Sep; contact_replied only fires for p_requested='chaser', so
 'Follow up' (requested='reply') bypasses it.
+
+## Task 2a — BUILT AS A FLAG (Brad's amendment); NOT a gate; Task 2b CANCELLED
+EVIDENCE: migration 150 (schema_migrations 20260930152444). fn_evaluate_gates md5 18099d27… unchanged and does not
+mention company_already_approached.
+- CONFIRMED by reading fn_group_siblings_engaged / fn_company_group_pairs: siblings are LINKED companies only (R1 exact
+  parent_group, R2 parent_group names the sibling's domain, R3 parent_group names the sibling; engaged = Monday deal,
+  opportunity_status Contacted/Active Lead/Partner, or a contact Contacted/In conversation/Meeting booked). Same
+  company_id colleagues are not considered.
+- RE-MEASURED (real first approaches, touch_type Initial message/Other, sent_at_actual NOT NULL, London day):
+  **39 company-days, 96 people** (brief: 45 / 109). Worst: The Very Group 5, Rebuy 5, then mySWOOOP, Save Group, Forza
+  Refurbished, bol.com 3 each. Counting real phantom CRs as well gives 79 company-days / 231 people, which may be how
+  the brief's figure was reached.
+- ENUM TRAP: the brief's 'Cold InMail' is NOT a touch_type value (values: Initial message | Connection request | Chase |
+  Reply | Event follow-up | Introduction | Meeting confirmation | Other | Chaser 1-3 | Follow up). A cold InMail is
+  'Initial message' on channel 'LinkedIn inMail'. The function uses ('Initial message','Other').
+- mobileup: NEITHER mobileup contact (Beat, Elias) exists in Supabase, nor does Manuel at Jacob. Their InMails (28 and 30
+  Jul) predate sent_at_actual, so the flag cannot see July-era history at all.
+- BUILT: fn_company_already_approached(p_team_id, p_contact_id, p_requested) -> (flagged, colleague, approached_at,
+  colleague_contact_id); the brief's 'blocked' column is named 'flagged' because nothing is refused. Chasers and replies
+  never flag. v_draft_company_flags gives the flag + flag_text ("A colleague at this company, X, was approached on
+  <date> and has not replied.") for every open draft. The card display is Lovable work (Task 4 message).
+- REFUSAL COUNTS (before; unchanged because nothing is wired), 1,023 live contacts, channel LinkedIn DM:
+  chaser: PASS 727, group_sibling_engaged 70, contact_parked 67, dnc_or_opted_out 67, pending_ruling 41,
+  thread_text_missing 23, promise_of_quiet 17, contact_replied 9, allowance_exhausted 2.
+  initial_message: PASS 761, group_sibling_engaged 70, contact_parked 67, dnc_or_opted_out 67, pending_ruling 41,
+  promise_of_quiet 17.
+- DRY RUN: open drafts 108 pending_review + 18 approved (brief: 107 + 18). FLAGGED: **24 pending + 5 approved = 29 drafts
+  at 13 companies.**
+  Approved (5): Luca Sansone and Daniele Voltolina (Comet; colleague Massimo Cillerai 25 Aug); Anthony O'Dea (GreenIT
+  Ireland; Greg Kielek 28 Jul); Sanmeet Singh Kochhar (HMD; Anssi Rönnemaa 22 Sep); **Philipp Lohmar (Tchibo; Davit
+  Gniech 28 Jul)**.
+  Pending (24): Marcel Masek (0815); Nathalie D (AfB; Mike Reif); Caroline Prick, Luuc Mannaerts, Fiona Vanderbroeck
+  (bol.com; Maite Zubiaurre); Sami Amarir, Ilias Moutani (DBC ELECTRONICS; Selim Salah); Rowan Westerduin (Fixje);
+  Jean-Francois Baril, Csilla Bors, Duc Anh Nguyen P654 AND P921 (HMD, a duplicate contact); Konstantinos Stamatopoulos,
+  Marta Gutiérrez Ràfales, Alexander Klinger, Janette Keller, Sebastian Koch, Henry Braun, Alexander T. Rauchut
+  (MediaMarkt Saturn; Chris Stapelfeldt 10 Aug); Jean-Christophe Haimb (Pearl; Sandra Wursthorn); Frank Schuster, Monika
+  Maciejewska (T-Mobile; Ronit Avzardel); Markus Lawrenz, Johannes Häner (topi; Leonard Coen 2 Sep).
+- DEVIATION: Bianca Pfaller and Robert Karl (Drei) are NOT flagged. Nobody at Drei has a real send yet: all 6 Drei
+  drafts are open (2 approved: Bianca, Robert; 4 pending). The flag looks at sends, not at open drafts queued together,
+  so it fires for the rest as soon as the first Drei message goes out. A "sibling drafts also open" warning would need
+  a second rule; not built.
+- Oliver's two rulings (expiry, company vs group) are no longer needed; the flag is shown and he decides.
