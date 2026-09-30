@@ -7,6 +7,7 @@ import { callAnthropicWithSentinel, BudgetExceededError } from "./_shared/anthro
 // F10 (v32): owner signs, SENT-only thread context, created_by.
 // F15.2 (v33, 2026-09-15): routing matrix enforced and asserted for every caller (see ROUTING MATRIX block).
 // F16.16 (v38, 2026-09-15): a reply for a company with an engaged group sibling carries a visible GROUP COLLISION note instead of a refusal.
+// F24.4 (v45, 2026-09-30): empty Language field -> infer from the company's country, reason recorded.
 // F24.1 (v45, 2026-09-30): prior rejections of this contact + touch type go into the prompt (redraft must differ).
 // F22B.11(c) (v44, 2026-09-23): the German register (du/Sie) comes from the thread first, the Formality field second.
 // F16.3 (v36, 2026-09-15): a reply drafted for an unresearched company carries a visible note in narrative and guardrails.
@@ -184,7 +185,25 @@ const WRITTEN_LANGUAGES = new Set(["EN", "DE"]);
  * in English or German: any other resolved language is written in English, and the reason says so.
  */
 // deno-lint-ignore no-explicit-any
-function resolveTargetLanguage(prev: any[], contactLang: string | null | undefined): { language: string; reason: string } {
+// F24.4 (v45, 2026-09-30): i168. An empty Language field must not silently mean English: infer from the COMPANY'S
+// country first, and say so in draft_language_reason. Only EN and DE are written, so a non-German country still clamps to
+// EN, but the reason names the country and the language it implies. Switzerland is inferred as DE (majority) and says so.
+const COUNTRY_LANGUAGE: Record<string, string> = {
+  germany: "DE", deutschland: "DE", austria: "DE", "österreich": "DE", osterreich: "DE", liechtenstein: "DE",
+  switzerland: "DE", schweiz: "DE",
+  france: "FR", belgium: "NL", netherlands: "NL", "the netherlands": "NL", italy: "IT", spain: "ES",
+  sweden: "SV", finland: "FI", hungary: "HU", poland: "PL", "czech republic": "CS", czechia: "CS", denmark: "DA",
+  norway: "NO", portugal: "PT", luxembourg: "FR",
+  uk: "EN", "united kingdom": "EN", ireland: "EN", "united states": "EN", usa: "EN",
+};
+export function inferLanguageFromCountry(country: string | null | undefined): { language: string; note: string } | null {
+  const k = String(country ?? "").trim().toLowerCase();
+  if (!k) return null;
+  const lang = COUNTRY_LANGUAGE[k];
+  if (!lang) return null;
+  return { language: lang, note: k === "switzerland" || k === "schweiz" ? "Switzerland, majority German (check for Romandie / Ticino)" : country as string };
+}
+function resolveTargetLanguage(prev: any[], contactLang: string | null | undefined, companyCountry?: string | null): { language: string; reason: string } {
   const clamp = (l: string, reason: string) => WRITTEN_LANGUAGES.has(l)
     ? { language: l, reason }
     : { language: "EN", reason: `${reason}; ${l} is not a written language (EN and DE only), writing EN` };
@@ -195,7 +214,9 @@ function resolveTargetLanguage(prev: any[], contactLang: string | null | undefin
   }
   const cl = String(contactLang ?? "").trim().toUpperCase();
   if (cl && cl !== "OTHER") return clamp(cl, "contact_language: contact Language field");
-  return { language: "EN", reason: "default: no reply and no Language field, EN" };
+  const inferred = inferLanguageFromCountry(companyCountry);
+  if (inferred) return clamp(inferred.language, `company_country: Language field empty, inferred ${inferred.language} from the company's country (${inferred.note})`);
+  return { language: "EN", reason: `default: no reply, no Language field and no mappable company country (${String(companyCountry ?? "none") || "none"}), EN` };
 }
 // F22A.1(e): a German draft uses real umlauts. The transliterated spellings the model copied from notes.
 const GERMAN_TRANSLITERATION = /(^|[^\p{L}])(fuer|ueber\p{L}*|koennen|koennte\p{L}*|moechte\p{L}*|waere\p{L}*|wuerde\p{L}*|gruesse|gruessen|hoeren|naechste\p{L}*|spaeter|geraet\p{L}*|\p{L}*geraet\p{L}*|zusaetzlich\p{L}*|muessen|haette\p{L}*|laeuft|laesst|luecke\p{L}*|\p{L}*luecke|loesung\p{L}*|moeglich\p{L}*|natuerlich|zurueck\p{L}*|haendler\p{L}*|unabhaengig|auffaellig|tatsaechlich|geschaeft\p{L}*|verhaeltnis\p{L}*|waehrend|haeufig\p{L}*)(?=[^\p{L}]|$)/iu;
@@ -570,7 +591,7 @@ Deno.serve(async (req) => {
     // rejected drafts never feed the narrative, the no-repetition context or the counters.
     const allPrev = (prevRows ?? []).filter((r) => r.touch_type === "Reply" || String(r.send_status ?? "") === "Sent");
     // F9.5b: the target language is decided here, explicitly, and told to the model.
-    const target = resolveTargetLanguage(allPrev, contact.language_code);
+    const target = resolveTargetLanguage(allPrev, contact.language_code, company?.country ?? null);
     console.log(JSON.stringify({ event: "language_resolved", contact_id: contact.id, language: target.language, reason: target.reason }));
     // F15.6 CONTEXT PER TYPE (matrix): an opener sees company + contact only (no thread exists); a chaser
     // sees the opener IN FULL plus the narrative/guardrails that produced it plus every earlier chaser on
