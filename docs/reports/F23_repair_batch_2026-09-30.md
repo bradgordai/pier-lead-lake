@@ -165,3 +165,34 @@ trg_improvements_stamp_source stamped source_channel='lovable_app' and source_ac
 - Related findings: team_settings has weekly_cr_target and no daily cap; allowance_exhausted is only computed for
   chasers inside fn_evaluate_gates, never for CRs. The same scoped inbound bearer is typed in plaintext in 9589633's
   two HTTP modules (as in 9850348). Not changed.
+
+## Task 8 — GUARD DONE (existing 12 untouched)
+EVIDENCE: migration 153. Rolled-back tests: insert "BACK-market" -> 23505 duplicate_company: matches existing C1382
+Back Market by name; insert "Totally Different Name" with website https://www.easycash.fr/shop -> 23505 matches C345
+Easy Cash by domain; a genuinely new name -> inserted.
+ROOT CAUSE (finding): upsert-contact-from-sales-nav's company matcher loads only companies with archived_at IS NULL, so
+an ARCHIVED company is invisible to it and its auto-create (added_via 'sales_nav_auto') makes a second. 11 of the 12
+collisions are an archived original plus a newer copy.
+GUARD: trg_company_duplicate_guard (BEFORE INSERT on companies) refuses a normalised-name (lower, non-alphanumerics
+stripped) or root_domain match against ANY company of the team, archived or not, with SQLSTATE 23505 and a message
+naming the existing company. NOTE root_domain is always derived from website_url by tg_companies_normalise, which fires
+first, so domain matching uses the website.
+DEVIATION (honest): a trigger cannot RETURN the existing company to the caller. The ingest treats the refusal as
+"auto-create failed" and inserts the contact UNMATCHED, which sends it to Reconciliation for a human to attach. Attaching
+it to the existing company automatically needs a change in upsert-contact-from-sales-nav, plus a ruling on whether a
+contact may be attached to an ARCHIVED company (its drafts would then be refused as company_archived). Not done.
+THE 12 EXISTING COLLISIONS, for Brad's ruling (NOT merged):
+| key | older | newer |
+|---|---|---|
+| backmarket | C019 Back Market (archived, 23 Jul) | C1382 Back Market (24 Sep) |
+| easycash | C052 EasyCash [easycash.fr] (archived) | C345 Easy Cash [easycash.fr] (both 23 Jul) |
+| ebuyer | C230 Ebuyer [ebuyer.com] | C337 Ebuyer [ebuyer.com] (both live, both 23 Jul) |
+| efones | C282 eFones [efones.com] (archived) | C231 eFones (both 23 Jul) |
+| geekmarket | C348 Geekmarket (archived, 23 Jul) | C1385 GeekMarket (24 Sep) |
+| grover | C089 Grover [grover.com] (archived, 23 Jul) | C1380 Grover (24 Sep) |
+| mediamonster | C497 Media-Monster [media-monster.be] (archived, 4 Sep) | C1373 MediaMonster (22 Sep) |
+| mediongmbh | C1322 medion GmbH (archived, 4 Sep) | C1393 medion GmbH (28 Sep) |
+| recommercegroup | C149 Recommerce Group (archived) | C150 re/commerce Group (both 23 Jul, same domain) |
+| spusu | C456 spusu [spusu.at] (archived, 4 Sep) | C1388 spusu (24 Sep) |
+| swappie | C179 Swappie [swappie.com] (archived, 23 Jul) | C1384 Swappie (24 Sep) |
+| utopya | C202 Utopya [utopya.fr] (archived, 23 Jul) | C1339 Utopya [utopya.com] (9 Sep) |
