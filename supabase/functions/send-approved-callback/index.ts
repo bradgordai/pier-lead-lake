@@ -1,3 +1,5 @@
+// F23.1 (v17, 2026-09-30): a skipped send (exit 0, empty resultObject) returns to Draft + pending_review with
+// hold_reason='phantom_skipped_duplicate' instead of Cancelled; a real send clears hold_reason.
 // F19 (2026-09-21): idempotent on phantom_run_id; an unmatched callback is retried then PARKED for replay; the
 // send queue is released by the terminal write here, not by a timer. Native PhantomBuster payloads carry the
 // same field names Make forwards (containerId, agentId, exitCode, exitMessage, resultObject as a JSON string).
@@ -153,7 +155,7 @@ Deno.serve(async (req) => {
 
   try {
     const { data: row0, error: fErr } = await supabase.from("outreach_log")
-      .select("id, contact_ref, send_status, draft_status, sent_body, message_body")
+      .select("id, contact_ref, send_status, draft_status, sent_body, message_body, hold_reason")
       .eq("team_id", PIER_TEAM_ID).eq("phantom_run_id", runId).limit(1).maybeSingle();
     if (fErr) throw fErr;
     // F19.3(b)(c): THE RACE. The dispatcher can only store phantom_run_id AFTER PhantomBuster's launch call
@@ -165,7 +167,7 @@ Deno.serve(async (req) => {
     for (let i = 0; !found && i < 4; i++) {
       await new Promise((r) => setTimeout(r, 2000));
       const { data: again } = await supabase.from("outreach_log")
-        .select("id, contact_ref, send_status, draft_status, sent_body, message_body")
+        .select("id, contact_ref, send_status, draft_status, sent_body, message_body, hold_reason")
         .eq("team_id", PIER_TEAM_ID).eq("phantom_run_id", runId).limit(1).maybeSingle();
       found = again ?? null;
     }
@@ -182,6 +184,12 @@ Deno.serve(async (req) => {
     // fallback, the same run can report twice. A row that is already terminal is never written again: a
     // second callback must not move sent_at_actual, re-run the send effects, or (if its payload differs)
     // turn a real send into Cancelled and refund its InMail credit.
+    // F23.1: a skip is no longer terminal (the row goes back to Draft), so a repeat of the SAME run's skip callback is
+    // recognised by hold_reason + Draft and ignored rather than processed twice.
+    if (String(row.send_status) === "Draft" && row.hold_reason === "phantom_skipped_duplicate") {
+      console.log(JSON.stringify({ event: "callback_duplicate_ignored", id: row.id, run_id: runId, send_status: row.send_status, hold_reason: row.hold_reason }));
+      return json(200, { status: "already_handled", outreach_log_id: row.id, phantom_run_id: runId, send_status: row.send_status });
+    }
     if (["Sent", "Cancelled"].includes(String(row.send_status))) {
       console.log(JSON.stringify({ event: "callback_duplicate_ignored", id: row.id, run_id: runId, send_status: row.send_status }));
       return json(200, { status: "already_terminal", outreach_log_id: row.id, phantom_run_id: runId, send_status: row.send_status });
@@ -202,16 +210,21 @@ Deno.serve(async (req) => {
     }
 
     // --- exit 0 but nothing produced: the phantom skipped (duplicate / empty input) ---
+    // F23.1 (v17, 2026-09-30): this path used to set send_status='Cancelled'. That fired trg_supersede_failed_send
+    // (migration 145), the draft was superseded, and send-approved-draft only accepts Draft or Ready, so the draft
+    // died silently (11 rows by 30 Sep). A skip is NOT a failure: nothing went out. The row goes back to
+    // send_status='Draft' and to REVIEW (draft_status='pending_review', never 'approved'): the PhantomBuster dedupe
+    // that caused the skip is gone, so a second press would genuinely deliver and a human must look first.
+    // hold_reason says why; the draft card shows it.
     if (results.length === 0) {
       const { error: uErr } = await supabase.from("outreach_log")
-        .update({ send_status: "Cancelled", send_error: "phantom_skipped_duplicate_or_empty" })
-        // draft_status deliberately left at 'approved' so Oli can decide whether to resend
-        // or send by hand. The message never went out; it is not 'sent'.
+        .update({ send_status: "Draft", draft_status: "pending_review", hold_reason: "phantom_skipped_duplicate",
+                  send_error: "phantom_skipped_duplicate_or_empty" })
         .eq("id", row.id).eq("team_id", PIER_TEAM_ID);
       if (uErr) throw uErr;
       await reverseInmailCharge(row.id, "phantom_skipped_duplicate_or_empty");
-      await supabase.from("send_queue").update({ status: "failed", finished_at: new Date().toISOString(), detail: "callback: not delivered" }).eq("outreach_log_id", row.id).in("status", ["launched", "stuck"]);
-      await logAudit("send_skipped", row.id, "LinkedIn skipped this send (already messaged recently, or empty input). Draft left in Approved.", { phantom_run_id: runId, exit_code: 0, exit_message: exitMessage });
+      await supabase.from("send_queue").update({ status: "failed", finished_at: new Date().toISOString(), detail: "callback: skipped by LinkedIn tool, returned to review" }).eq("outreach_log_id", row.id).in("status", ["launched", "stuck"]);
+      await logAudit("send_skipped", row.id, "The LinkedIn tool skipped this send (already messaged recently, or empty input). Draft returned to review.", { phantom_run_id: runId, exit_code: 0, exit_message: exitMessage });
       console.warn(JSON.stringify({ event: "send_skipped", id: row.id, run_id: runId }));
       return json(200, { status: "send_skipped", outreach_log_id: row.id, phantom_run_id: runId, reason: "phantom_skipped_duplicate_or_empty" });
     }
@@ -224,7 +237,7 @@ Deno.serve(async (req) => {
     const confirmedBody = row.sent_body ?? (stripHtml(String(row.message_body ?? "")) || null);
     const { error: uErr } = await supabase.from("outreach_log")
       .update({ send_status: "Sent", draft_status: "sent", sent_at_actual: new Date().toISOString(), send_error: null,
-                sent_body: confirmedBody })
+                sent_body: confirmedBody, hold_reason: null })
       .eq("id", row.id).eq("team_id", PIER_TEAM_ID);
     if (uErr) throw uErr;
     await supabase.from("send_queue").update({ status: "done", finished_at: new Date().toISOString() }).eq("outreach_log_id", row.id).in("status", ["launched", "stuck"]);
