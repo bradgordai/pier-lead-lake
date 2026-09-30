@@ -214,3 +214,27 @@ PER GATE:
 | allowance_exhausted | chaser N+1 on a channel once cap (DM 3 / InMail 1 / Email 3) is sent | ALSO enforced by fn_chase_candidates (protected; mentions caps), so converting the gate alone changes nothing: the engine never proposes the contact. Needs a change to a protected function | draft card: "4th chaser; allowance is 3" |
 | contact_replied | a chaser after the contact replied (chase_state='replied'), only for p_requested='chaser' | ALSO filtered by fn_chase_candidates / first-message / cold-InMail / reply candidates (all mention 'replied'). And, per Brad's Torsten finding, 'Follow up' (requested 'reply') bypasses it today, so as a flag it should cover follow-ups too | draft card: "They replied on <date>: answer the reply, not a chaser" |
 | country_unknown | EMAIL only: no stated country, so cold-email legality unknown | fn_send_ready_contacts mentions country. CAUTION: channel_illegal_in_market stays absolute, but with no country it cannot be evaluated, so a flag here means an email can go out with legality unestablished. Brad to confirm that is intended | email draft card: "Country unknown: cold-email legality not established" |
+
+## Task 4 — DONE (Lovable 45ca060 + fixes 57085ee, 4242e27; PUBLISHED)
+Expected figures MEASURED AT RUNTIME (queries):
+- Sent: `select count(*) from outreach_log where send_status='Sent'` = 1,155 (draft_status='sent' gives 1,259; 109 of those
+  are Cancelled). Chrome, Outreach "Sent" tab: **1155** ✔.
+- Pending Review canon: `select count(*) from outreach_log o left join contacts c on c.id=o.contact_id left join companies co
+  on co.id=c.company_id where o.send_status='Draft' and o.draft_status='pending_review' and co.archived_at is null` = 106.
+  Chrome: Outreach Pending Review **106** ✔, Today "Drafts to approve" **106** ✔. (Dropping Lovable's old "contact not
+  soft-deleted" rule changes nothing today: 0 such drafts.)
+- Approved and unsent: `draft_status='approved' and send_status in ('Draft','Ready')` = 18. Chrome, Today strip:
+  "**18 approved, waiting for you to press Send**" ✔ (previously "Send queue empty").
+- Promotion rate: was 558% (67 promoted ÷ 12 DM replies). Now "Promotion rate (of companies that replied)": companies with a
+  Reply row that are promoted ÷ companies with a Reply row. Lovable counts promoted as archive_reason='promoted_to_monday'
+  only: 11 ÷ 32 = 34%; Chrome all-time **34%** ✔. (Counting monday_deal_id as well would give 15/32 = 47%; flagged.)
+  Any rate over 100% is clamped by safeRate() with console.warn('rate_clamped', …).
+- Empty windows render "—" (Chrome: Accepted this wk "—", Positive-sentiment "—") ✔.
+- hold_reason line: Chrome, Today to-do under Urs Moeller: "The LinkedIn tool skipped this last time. It was returned to
+  review; check it before sending again." ✔. (Urs's contact Conversation tab lists no open drafts at all, so the line is
+  not there; existing behaviour.)
+- Colleague flag (Task 2a): Chrome, Philipp Lohmar's contact Conversation tab: "A colleague at this company, **Davit
+  Gniech** (link), was approached on 28 Jul 2026 and has not replied." ✔. Two Lovable fixes were needed: the warnings
+  were not mounted on the contact tab's unsent-draft card, and the loader coupled the two lookups.
+- Restored drafts do not increment chaser counters: chaser counts read send_status='Sent' only (confirmed by Lovable; the
+  gate counts Sent chasers only).
