@@ -146,3 +146,22 @@ DEVIATION (necessary): EXECUTE was also granted to PUBLIC, which anon and authen
 the two named roles would have left the function callable. Revoked from PUBLIC, anon and authenticated.
 PROOF the trigger still works: rolled-back insert into improvements AS authenticated (Brad's user) succeeded and
 trg_improvements_stamp_source stamped source_channel='lovable_app' and source_actor.
+
+## Task 7 — STOPPED AND REPORTED: no invitation date reaches Supabase. This is a PhantomBuster question. Nothing built.
+- WHO WRITES THE SYNTHETIC CR ROWS: all of them since 20 Sep carry touch_id 'cr-<uuid>' and come from
+  upsert-contact-from-sales-nav (on a NEW Request-sent contact it inserts a Connection request row with touch_date =
+  the ingest day, send_status Sent, no sent_at_actual). Per ingest day: 22 Sep 71 (+1 legacy 'cc-20260902' row),
+  24 Sep 52, 25 Sep 9, 28 Sep 62, 29 Sep 7.
+- THE PAYLOAD: Make 9589633 "Pier Sales Nav List Watcher" (read only) forwards ONLY profileUrl, linkedInProfileUrl,
+  firstName, lastName, headline, companyName, companyUrl, location, connectionDegree, listName. No date at all.
+- WHAT THE PHANTOM EMITS (Sales Navigator List Export, agent 2343586699386601, sample bundle in the Make blueprint):
+  dateAdded (when the lead was added to the Sales Nav LIST, not the invitation date), timestamp (the scrape time),
+  and outreachDate / outreachActivity, which are EMPTY ("") in the sample. The latest run (container 3228157281688873,
+  30 Sep 12:09) returned "No new results found", and PhantomBuster no longer holds the 22 Sep containers, so I could
+  not confirm whether outreachDate is ever populated.
+- CONCLUSION: the true invitation date is not available to Supabase today. Whether outreachDate / outreachActivity
+  carry it (and could be mapped through Make) is a PhantomBuster question. Using dateAdded or the ingest day would be
+  inference, which the brief forbids. cr_observed_at, the per-day view and daily_cr_cap are NOT built.
+- Related findings: team_settings has weekly_cr_target and no daily cap; allowance_exhausted is only computed for
+  chasers inside fn_evaluate_gates, never for CRs. The same scoped inbound bearer is typed in plaintext in 9589633's
+  two HTTP modules (as in 9850348). Not changed.
