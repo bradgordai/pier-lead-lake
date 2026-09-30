@@ -137,3 +137,12 @@ EVIDENCE: migration 151 (schema_migrations 20260930152834).
   field). In Supabase: Alexandra Asanache (P093, Lenovo) EXISTS; Beat and Elias (mobileup) and Manuel (Jacob) do NOT
   exist as contacts, so they cannot be flagged until they are created.
 - TS types regenerated after 151 (is_blocked, blocked_at, v_draft_company_flags, fn_company_already_approached present).
+
+## Task 6 — DONE
+EVIDENCE: migration 152 (schema_migrations 20260930153418). fn_improvements_stamp_source ACL was
+{=X (PUBLIC), postgres, anon, authenticated, service_role}; now {postgres, service_role}. has_function_privilege:
+anon false, authenticated false.
+DEVIATION (necessary): EXECUTE was also granted to PUBLIC, which anon and authenticated inherit, so revoking only from
+the two named roles would have left the function callable. Revoked from PUBLIC, anon and authenticated.
+PROOF the trigger still works: rolled-back insert into improvements AS authenticated (Brad's user) succeeded and
+trg_improvements_stamp_source stamped source_channel='lovable_app' and source_actor.
