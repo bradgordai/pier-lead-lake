@@ -178,13 +178,13 @@ function detectLanguage(text: string): string | null {
 // F22A.1(a): the country-to-language map is DELETED. It came from our own commit 6ab963e, not from Oliver, and
 // contradicted Email_Architect 2.3 ("do not infer the target language from ... locations alone") and 11a.2
 // ("English and German only by default"). A French company no longer gets French.
+// F24.4 reintroduces a country map ONLY as a fallback for an EMPTY Language field (Brad, i168), still clamped to EN/DE.
 const WRITTEN_LANGUAGES = new Set(["EN", "DE"]);
 /**
  * F22A.1(a). Order: (1) the language of the contact's OWN prior replies, most recent first; (2) the contact's
  * Language field; (3) English. detectLanguage still RECOGNISES other languages inbound, but we only ever WRITE
  * in English or German: any other resolved language is written in English, and the reason says so.
  */
-// deno-lint-ignore no-explicit-any
 // F24.4 (v45, 2026-09-30): i168. An empty Language field must not silently mean English: infer from the COMPANY'S
 // country first, and say so in draft_language_reason. Only EN and DE are written, so a non-German country still clamps to
 // EN, but the reason names the country and the language it implies. Switzerland is inferred as DE (majority) and says so.
@@ -203,6 +203,7 @@ export function inferLanguageFromCountry(country: string | null | undefined): { 
   if (!lang) return null;
   return { language: lang, note: k === "switzerland" || k === "schweiz" ? "Switzerland, majority German (check for Romandie / Ticino)" : country as string };
 }
+// deno-lint-ignore no-explicit-any
 function resolveTargetLanguage(prev: any[], contactLang: string | null | undefined, companyCountry?: string | null): { language: string; reason: string } {
   const clamp = (l: string, reason: string) => WRITTEN_LANGUAGES.has(l)
     ? { language: l, reason }
