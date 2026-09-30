@@ -117,3 +117,23 @@ PROPOSED FIX (not applied, needs Brad's word; it is a database change): cast eve
 `changed := changed || 'wedge'::text` (or array_append(changed, 'wedge')) in all six branches, one migration, then
 re-run the four probes above expecting ok. No data change is needed.
 The array columns category / insurance_product_types / merged_from_refs are not involved in this error.
+
+## Task 5 — DATABASE DONE (UI: Lovable message after Task 4)
+EVIDENCE: migration 151 (schema_migrations 20260930152834).
+- contacts.is_blocked boolean NOT NULL DEFAULT false, contacts.blocked_at timestamptz.
+- fn_evaluate_gates: 'recipient_blocked' is an ABSOLUTE refusal placed directly after dnc_or_opted_out, above
+  contact_parked and every discretionary gate. PROOF the rest is unchanged: new md5 bd344049…; the same definition with
+  the new 7-line block removed hashes to 18099d27…, identical to the pre-batch function.
+- refusals.reason_code check extended with 'recipient_blocked' (otherwise the drafter's refusal insert would fail).
+  FINDING: the check also lists 'company_archived' (emitted by the drafter, not the gate function), so there are 13
+  codes in use, not the brief's 12; 14 with the new one.
+- NO BACKFILL. is_blocked = true on 0 contacts.
+- VERIFY, refusal counts per reason_code, 1,023 live contacts × {chaser, initial_message}, before vs after: EVERY
+  contact's code identical (0 rows changed). recipient_blocked = 0. Totals unchanged: chaser PASS 727,
+  group_sibling_engaged 70, contact_parked 67, dnc 67, pending_ruling 41, thread_text_missing 23, promise_of_quiet 17,
+  contact_replied 9, allowance_exhausted 2; initial_message PASS 761, group 70, parked 67, dnc 67, pending 41, quiet 17.
+- SOURCE for the later backfill (NOT done): 260928_salesnav_inbox_run1/2.json, 4 threads with
+  restriction=MEMBER_BLOCKED_BY_RECIPIENT, participants[] EMPTY in all 4 (identified only by the annotated 'who'
+  field). In Supabase: Alexandra Asanache (P093, Lenovo) EXISTS; Beat and Elias (mobileup) and Manuel (Jacob) do NOT
+  exist as contacts, so they cannot be flagged until they are created.
+- TS types regenerated after 151 (is_blocked, blocked_at, v_draft_company_flags, fn_company_already_approached present).
