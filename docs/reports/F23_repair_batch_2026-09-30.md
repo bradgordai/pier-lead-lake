@@ -97,3 +97,23 @@ mention company_already_approached.
   so it fires for the rest as soon as the first Drei message goes out. A "sibling drafts also open" warning would need
   a second rule; not built.
 - Oliver's two rulings (expiry, company vs group) are no longer needed; the flag is shown and he decides.
+
+## Task 3 — STOPPED AND REPORTED: THE DATABASE IS AT FAULT (not Lovable). Nothing changed.
+The brief's premise (fault in Lovable; fn_company_score_mark_dirty harmless) is wrong. Rolled-back probes on Smarando
+(C962), 30 Sep:
+- update usp_notes (changed value)        -> ERROR malformed array literal: "wedge"
+- update research_stage (valid enum cast) -> ERROR malformed array literal: "research_stage"
+- update last_refreshed = current_date     -> ERROR malformed array literal: "last_refreshed"
+- no-op update (industry = industry)       -> ok
+CAUSE: fn_company_score_mark_dirty (migration 137, F22B.1, written by me on 22 Sep), fired by trg_company_score_mark_dirty
+AFTER UPDATE ON companies FOR EACH ROW (no column list). It declares `changed text[]` and appends with
+`changed := changed || 'research_stage'`: the untyped literal makes Postgres pick array || array and parse the word as an
+array literal. All six branches (research_stage, company_size, insurance, wedge=usp_notes, country, last_refreshed) fail
+whenever that field actually changes. The error is raised BEFORE the company_scores UPDATE, so "company_scores has 3
+rows" does not make it harmless. The 28 Sep usp_notes probe almost certainly wrote an unchanged value, so no branch ran.
+i145 and i156 already describe exactly this.
+IMPACT: since 22 Sep 23:20 UTC NO research field on ANY company can be changed, from Lovable or through the MCP.
+PROPOSED FIX (not applied, needs Brad's word; it is a database change): cast every literal, e.g.
+`changed := changed || 'wedge'::text` (or array_append(changed, 'wedge')) in all six branches, one migration, then
+re-run the four probes above expecting ok. No data change is needed.
+The array columns category / insurance_product_types / merged_from_refs are not involved in this error.
