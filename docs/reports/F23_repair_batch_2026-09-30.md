@@ -238,3 +238,33 @@ Expected figures MEASURED AT RUNTIME (queries):
   were not mounted on the contact tab's unsent-draft card, and the loader coupled the two lookups.
 - Restored drafts do not increment chaser counters: chaser counts read send_status='Sent' only (confirmed by Lovable; the
   gate counts Sent chasers only).
+
+## Task 5 UI — DONE (Lovable 9a01adb + label fix f667a46; PUBLISHED)
+Chrome: Alexandra Asanache (P093) contact header shows "Mark as blocked by recipient" (NOT clicked; is_blocked = 0 rows).
+Today > What the system did > Refusals now reads "Linked company already being worked", "Earlier message text missing"
+(was raw codes; one shared label map with all 14 codes, fallback "Refused (<code>)"). Red "Blocked" pill, "Blocked by
+recipient on LinkedIn · since <date>" badge and the Contacts filter are built but cannot render until someone is blocked
+(0 today): NOT seen rendered.
+
+## Close-out
+Scratch table _f23_gate_snap DROPPED. Migrations 149-153 in schema_migrations. Lovable publishes this batch: Task 4
+(45ca060 + 57085ee + 4242e27) and Task 5 (9a01adb + f667a46), pier-lead-lake.lovable.app. Nothing sent.
+
+## FINAL TABLE — every column, function, view, gate and trigger added, and the screen it appears on
+| Object | Type | Task | Screen |
+|---|---|---|---|
+| outreach_log.hold_reason | column | 1 | Draft card amber line "The LinkedIn tool skipped this last time…" (Today to-do seen; Outreach list/thread, contact Conversation) |
+| send-approved-callback v17 (skip → Draft + pending_review) | function (EF) | 1 | the returned draft reappears in Pending Review (Outreach, Today) |
+| tests/send_hold_reason_test.py | regression test | 1 | **none** (repo test; no screen by nature) — DEFECT per brief's rule, listed |
+| fn_company_already_approached | function | 2a | via v_draft_company_flags (below) |
+| v_draft_company_flags | view | 2a | Draft card amber line "A colleague at this company, X (link), was approached on <date>…" (contact Conversation seen for Lohmar; Today to-do, Outreach) |
+| contacts.is_blocked | column | 5 | Contact header badge + "Mark as blocked by recipient" (seen), Contacts list pill + filter (not yet seen: 0 blocked) |
+| contacts.blocked_at | column | 5 | Contact header "since <date>" (not yet seen: 0 blocked) |
+| gate 'recipient_blocked' in fn_evaluate_gates | gate | 5 | Refusal lists "Blocked by recipient" (label map; not yet seen: 0 refusals) |
+| refusals_reason_code_check (+recipient_blocked) | constraint | 5 | **none** directly (enables the refusal row) — DEFECT per rule, listed |
+| fn_improvements_stamp_source EXECUTE revoked | privilege | 6 | **none** (security hardening; no screen by nature) — DEFECT per rule, listed |
+| fn_company_name_key | function | 8 | **none** (used by the guard) — DEFECT per rule, listed |
+| companies_team_name_key_idx, companies_team_root_domain_idx | indexes | 8 | **none** — DEFECT per rule, listed |
+| fn_company_duplicate_guard / trg_company_duplicate_guard | function + trigger | 8 | Error toast on the Lovable "new company" form when a duplicate is typed (NOT tested in Chrome: it would create a company). Contacts from Sales Nav land in Reconciliation > LinkedIn Contacts when refused |
+| cr_observed_at / per-day CR view / daily_cr_cap | NOT BUILT | 7 | STOPPED: no invitation date in the payload |
+| fn_company_score_mark_dirty fix | NOT BUILT | 3 | STOPPED: DB at fault, fix proposed |
