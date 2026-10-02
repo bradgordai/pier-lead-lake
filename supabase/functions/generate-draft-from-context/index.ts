@@ -7,6 +7,7 @@ import { callAnthropicWithSentinel, BudgetExceededError } from "./_shared/anthro
 // F10 (v32): owner signs, SENT-only thread context, created_by.
 // F15.2 (v33, 2026-09-15): routing matrix enforced and asserted for every caller (see ROUTING MATRIX block).
 // F16.16 (v38, 2026-09-15): a reply for a company with an engaged group sibling carries a visible GROUP COLLISION note instead of a refusal.
+// F25.10 (v47, 2026-10-02): outreach_log.generated_body written at insert (the body Oliver first sees), never updated.
 // F25.4a/b (v46, 2026-10-02): active learned_correction_rules (scoped by channel + touch type) go into the USER prompt as a
 //   LEARNED CORRECTIONS block; their ids are stamped on the row (applied_correction_rule_ids).
 // F25.4d (v46, 2026-10-02): Oliver's sign-off by register, enforced in code; never Oli (i155, v10.13).
@@ -945,6 +946,9 @@ Deno.serve(async (req) => {
     const insertRow = {
       team_id: PIER_TEAM_ID, touch_id: `agent-${crypto.randomUUID()}`, contact_ref: contact.contact_id ?? null, contact_id: contact.id, company_id: contact.company_id ?? null,
       channel: mapped.channel, touch_type: mapped.touch_type, message_body: messageBody, subject_line: subjectLine,
+      // F25.10 (v47): the body exactly as generated (after the sign-off rule), kept forever so an edit before approval can
+      // be learned from (trg_learn_from_edit, migration 162). Never written again: trg_generated_body_immutable.
+      generated_body: generationFailed ? null : messageBody,
       draft_status: "pending_review", send_status: "Draft", agent_produced: true,
       pre_lint_pass: lint.pass, voice_contract_violations: lint.violations, lint_score: lint.score,
       path, recommended_frame: frame, recommended_arc: arc, touch_date: today,
