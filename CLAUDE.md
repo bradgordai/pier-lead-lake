@@ -86,9 +86,11 @@ including the gate; a repair to it needs a rolled-back dry run showing zero newl
 ## 10. The voice stack
 Drafting loads layered assets from the voice_assets TABLE, not from files: layer 1 pier_rules, layer 2
 pier_terminology (always on); layer 3 linkedin_architect or email_architect by channel; layer 4
-voice_oliver ONLY for first_message_after_cr and warm_email_reply. voice_assets.applies_to is decorative:
-nothing reads it; the gate is in generate-draft-from-context. Sign-off rule lives in layer 1 (Oliver;
-"Oli" only where that contact already received a message signed Oli).
+voice_oliver on every touch type (since F22A.1). Layer 5 is learned_correction_rules (status 'active', scoped), read
+by the drafter into the USER prompt (F25.4); voice_assets 'learned_corrections' is historical. applies_to is decorative.
+Sign-off is CODE (drafter v46 signOffFor/enforceSignOff), Oliver's rule (i155, v10.13, 21 Sep 2026): "the sign-off follows
+the register and is never the drafter's choice. German du register: Oliver. German Sie register: Oliver Müller. English:
+Oliver Muller. Never Oli, never Ollie, never Oliver Mueller in a German message." No exception for earlier Oli threads.
 
 ## 11. Source documents live outside the repo
 - Oliver's EA documents: /Users/bradley/Documents/Claude/Projects/Pier Executive Assistant/
@@ -107,7 +109,7 @@ section 8.1(g); the "To Review" default stands anyway.
   after CR, cold InMail, reply sweep), send-approved-draft (gates + queue + PhantomBuster launch),
   send-approved-callback (the ONE place a send becomes Sent or Cancelled; idempotent on phantom_run_id),
   capture-and-classify-reply, upsert-contact-from-sales-nav, update-contact-on-cr-accepted, ai-edit-draft.
-  Also score-company, distill-learned-corrections (cron INACTIVE), proofread-drafts (Haiku, flags only).
+  Also score-company, distill-learned-corrections (cron Mon 05:30, writes 'proposed' rules), proofread-drafts (Haiku, flags only).
 - Lovable owns every screen; calls Edge Functions with the user's JWT (except generate-daily-insight, secret-only v17).
 - PhantomBuster SENDS: 5691059901018698 Pier LinkedIn Message Sender (DM), 8651232052097344 Pier Sales
   Navigator Message Sender (InMail), 7500783933729451 Pier LinkedIn Auto Connect (CR).
