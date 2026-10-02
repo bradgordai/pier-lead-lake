@@ -8,10 +8,15 @@
 //     unsynced history, not connected, out of scope). These are reported, never written into the prompt.
 // It merges the writing rules into the existing active rules (condensing, never just appending), scoped by touch_type
 // and channel, under CHAR_CEILING. Each rule keeps the feedback / touch ids that produced it (learned_correction_rules).
-// The rendered text becomes voice_assets 'learned_corrections' (layer 5) with a bumped version.
-//
-// NOT WIRED: generate-draft-from-context does not load layer 5 until Brad approves (F22B.6(g)). The weekly cron job
-// is created inactive; the first run is manual.
+// F25.4c (v3, 2026-10-02): THE HUMAN GATE. New rules are written as status 'proposed'; Oliver approves (-> active) or
+// rejects them on the Learned Corrections screen. The run NO LONGER marks every active rule 'deleted' (that full-set
+// replace would have emptied the drafter's rule set the first time new rules landed as proposed). A rule is retired only
+// when a new rule explicitly names it in "supersedes"; the retirement happens when Oliver APPROVES the new rule
+// (trigger trg_learned_rule_supersede, migration 161): the named rules become 'superseded' with superseded_by set.
+// The voice_assets 'learned_corrections' row is NO LONGER written: generate-draft-from-context v46 reads
+// learned_correction_rules directly (F25.4a). The rendered text is kept in learned_correction_runs.output only.
+// F25.10: draft_feedback rows with action 'edited_before_send' (Oliver edited a generated draft before approving it)
+// arrive with the generated text as rejected_excerpt and his version as replacement_excerpt, like any other correction.
 //
 // POST (internal class) { dry_run?: boolean, include_legacy?: boolean, triggered_by?: string }
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.45.4";
@@ -41,12 +46,17 @@ For EVERY correction you receive, decide:
   cooldown, a promise of quiet, messages missing from the history, not connected, out of scope, too small, a parallel
   conversation at the same company, a CR not sent). Report it; never make it a rule.
 
-Merge with the EXISTING rules: keep, reword, merge or drop them. Never duplicate. Keep the whole set under ${CHAR_CEILING}
-characters: when it gets close, CONDENSE. A rule applies to every touch type and channel unless the evidence is specific
-to one ("Chaser 1", "LinkedIn inMail", ...). Never invent a rule without a correction behind it.
+A correction whose action is "edited_before_send" is Oliver's own rewrite of a generated draft: rejected_excerpt is what
+the model wrote, replacement_excerpt is what he approved. The difference is the lesson.
+
+You see the EXISTING rules (active and proposed, each with its id). Return ONLY NEW rules: a rule that is new, or a
+better wording that replaces existing ones. Never return an existing rule unchanged and never duplicate one. When a new
+rule replaces existing rules, list their ids in "supersedes"; otherwise "supersedes" is []. Keep each rule short; the
+whole set stays under ${CHAR_CEILING} characters. A rule applies to every touch type and channel unless the evidence is
+specific to one ("Chaser 1", "LinkedIn inMail", ...). Never invent a rule without a correction behind it.
 
 Return ONLY JSON:
-{"rules":[{"text":"...","touch_type":null|"...","channel":null|"...","sources":["<id>", ...]}],
+{"rules":[{"text":"...","touch_type":null|"...","channel":null|"...","sources":["<id>", ...],"supersedes":["<existing rule id>", ...]}],
  "system_issues":[{"source":"<id>","category":"left_company|cooldown_or_quiet|history_missing|not_connected|out_of_scope|parallel_contact|other","note":"at most 12 words"}]}
 Keep every "note" to 12 words or fewer.`;
 
@@ -109,8 +119,9 @@ Deno.serve(async (req) => {
       }
     }
 
-    const { data: existing } = await supabase.from("learned_correction_rules").select("id, rule_text, scope_touch_type, scope_channel")
-      .eq("team_id", PIER_TEAM_ID).eq("status", "active");
+    const { data: existing } = await supabase.from("learned_correction_rules").select("id, rule_text, scope_touch_type, scope_channel, status")
+      .eq("team_id", PIER_TEAM_ID).in("status", ["active", "proposed"]);
+    const existingIds = new Set(((existing ?? []) as Array<{ id: string }>).map((e) => e.id));
 
     if (!corrections.length) {
       await supabase.from("learned_correction_runs").update({ status: dryRun ? "dry_run" : "done", finished_at: new Date().toISOString(),
@@ -134,29 +145,27 @@ Deno.serve(async (req) => {
     const rules: any[] = Array.isArray(out?.rules) ? out.rules.filter((x: any) => typeof x?.text === "string" && x.text.trim()) : [];
     const issues = Array.isArray(out?.system_issues) ? out.system_issues : [];
 
-    // Render grouped by scope and enforce the ceiling in code.
+    // Render grouped by scope (kept in the run output for review; no longer written to voice_assets).
     const groupKey = (x: { touch_type: string | null; channel: string | null }) => `${x.touch_type ?? "All touch types"} / ${x.channel ?? "all channels"}`;
     const groups = new Map<string, string[]>();
     for (const x of rules) { const k = groupKey(x); groups.set(k, [...(groups.get(k) ?? []), `- ${ws(x.text)}`]); }
     const rendered = rules.length
       ? Array.from(groups.entries()).map(([k, v]) => `## ${k}\n${v.join("\n")}`).join("\n\n")
       : "(No writing rules learned yet. The corrections so far were about state, timing or data, not wording.)";
-    if (rendered.length > CHAR_CEILING) throw new Error(`rendered layer ${rendered.length} chars exceeds ceiling ${CHAR_CEILING}`);
-    const n = Number(/^lc-v(\d+)/.exec(versionBefore)?.[1] ?? 0) + 1;
-    const versionAfter = `lc-v${n} (${new Date().toISOString().slice(0, 10)}; ${rules.length} rules; not wired)`;
+    if (rendered.length > CHAR_CEILING) throw new Error(`rendered proposals ${rendered.length} chars exceed ceiling ${CHAR_CEILING}`);
+    const versionAfter = `rules-${new Date().toISOString().slice(0, 10)} (${rules.length} proposed)`;
 
-    if (!dryRun) {
-      await supabase.from("learned_correction_rules").update({ status: "deleted" }).eq("team_id", PIER_TEAM_ID).eq("status", "active");
-      if (rules.length) {
-        await supabase.from("learned_correction_rules").insert(rules.map((x) => {
-          const src: string[] = Array.isArray(x.sources) ? x.sources.map(String) : [];
-          return { team_id: PIER_TEAM_ID, rule_text: ws(x.text), scope_touch_type: x.touch_type ?? null, scope_channel: x.channel ?? null,
-            source_feedback_ids: src.filter((s) => s.startsWith("fb:")).map((s) => s.slice(3)),
-            source_touch_ids: src.filter((s) => s.startsWith("touch:")).map((s) => s.slice(6)), created_by_run: run.id };
-        }));
-      }
-      await supabase.from("voice_assets").update({ body: rendered, version: versionAfter, updated_at: new Date().toISOString(),
-        updated_by: `distill-learned-corrections run ${run.id}` }).eq("id", "learned_corrections");
+    if (!dryRun && rules.length) {
+      // F25.4c: append as PROPOSED. Nothing existing is touched here; supersession happens on Oliver's approval.
+      const { error: insErr } = await supabase.from("learned_correction_rules").insert(rules.map((x) => {
+        const src: string[] = Array.isArray(x.sources) ? x.sources.map(String) : [];
+        const sup: string[] = Array.isArray(x.supersedes) ? x.supersedes.map(String).filter((id: string) => existingIds.has(id)) : [];
+        return { team_id: PIER_TEAM_ID, rule_text: ws(x.text), scope_touch_type: x.touch_type ?? null, scope_channel: x.channel ?? null,
+          source_feedback_ids: src.filter((s) => s.startsWith("fb:")).map((s) => s.slice(3)),
+          source_touch_ids: src.filter((s) => s.startsWith("touch:")).map((s) => s.slice(6)), created_by_run: run.id,
+          status: "proposed", supersedes_ids: sup };
+      }));
+      if (insErr) throw new Error(`rule insert failed: ${insErr.message}`);
     }
     await supabase.from("learned_correction_runs").update({ status: dryRun ? "dry_run" : "done", finished_at: new Date().toISOString(),
       feedback_considered: (fb ?? []).length, legacy_considered: legacyCount, writing_rules: rules.length, system_issues: issues,

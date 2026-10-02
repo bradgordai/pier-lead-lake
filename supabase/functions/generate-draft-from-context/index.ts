@@ -7,6 +7,9 @@ import { callAnthropicWithSentinel, BudgetExceededError } from "./_shared/anthro
 // F10 (v32): owner signs, SENT-only thread context, created_by.
 // F15.2 (v33, 2026-09-15): routing matrix enforced and asserted for every caller (see ROUTING MATRIX block).
 // F16.16 (v38, 2026-09-15): a reply for a company with an engaged group sibling carries a visible GROUP COLLISION note instead of a refusal.
+// F25.4a/b (v46, 2026-10-02): active learned_correction_rules (scoped by channel + touch type) go into the USER prompt as a
+//   LEARNED CORRECTIONS block; their ids are stamped on the row (applied_correction_rule_ids).
+// F25.4d (v46, 2026-10-02): Oliver's sign-off by register, enforced in code; never Oli (i155, v10.13).
 // F24.4 (v45, 2026-09-30): empty Language field -> infer from the company's country, reason recorded.
 // F24.1 (v45, 2026-09-30): prior rejections of this contact + touch type go into the prompt (redraft must differ).
 // F22B.11(c) (v44, 2026-09-23): the German register (du/Sie) comes from the thread first, the Formality field second.
@@ -43,8 +46,8 @@ const EA_ORDER = ["PIER_Rules", "LinkedIn_Message_Architect", "Lead_and_ICP_Brie
 //      ownership; messages go out from the owner's LinkedIn whoever pressed the button.
 //   2. body.requesting_user - only when the contact has no resolvable owner.
 //   3. "Oli" - last-resort legacy default, logged as a warning so it is visible.
-// F17 i067: no nickname by default. Oliver signs "Oliver" in cold outreach; "Oli" only where that contact has
-// already received a sent message from him signed "Oli" (resolved per contact below, never invented).
+// F17 i067: no nickname by default. F25.4d (v46): the sign-off NAME is no longer the sender's first name for Oliver:
+// signOffFor() picks it by register (German du "Oliver", German Sie "Oliver Müller", English "Oliver Muller"), never Oli.
 const NICKNAMES: Record<string, string> = {};
 // Split on whitespace AND . _ - so an email local-part degrades sensibly:
 // "oliver.muller" -> "Oliver" rather than the whole handle. Capitalise the first
@@ -149,6 +152,36 @@ function registerLine(formality: string | null | undefined, language: string | n
   if (formality === "Formal") return lang === "DE" ? "Sie (formal). Use Sie throughout, never du." : "formal and courteous.";
   return lang === "DE" ? "not recorded: default to Sie unless the prior thread already uses du." : "not recorded: match the prior thread.";
 }
+/** F25.4d. The du/Sie DECISION registerLine describes, as a value: the thread wins, else Formality, else Sie. */
+function germanRegister(formality: string | null | undefined, thread?: { register: "du" | "Sie"; source: string } | null): "du" | "Sie" {
+  if (thread) return thread.register;
+  return formality === "Informal" ? "du" : "Sie";
+}
+/** F25.4d. Oliver's sign-off by register (i155, v10.13): German du "Oliver", German Sie "Oliver Müller",
+ * English (every non-German draft) "Oliver Muller". Other senders keep their own first name. */
+function signOffFor(sender: string, language: string | null | undefined, formality: string | null | undefined,
+  thread?: { register: "du" | "Sie"; source: string } | null): string {
+  if (sender !== "Oliver") return sender;
+  if (String(language ?? "").toUpperCase() === "DE") return germanRegister(formality, thread) === "du" ? "Oliver" : "Oliver Müller";
+  return "Oliver Muller";
+}
+const OLIVER_SIGN_OFF = /^((?:.*?[,\s])?)(oliver(?:\s+(?:müller|mueller|muller))?|oli|ollie)[.!]?$/iu;
+/** F25.4d. The sign-off is code, not a suggestion: a trailing Oliver/Oli/Ollie/Oliver Mueller line (or "Best, Oliver")
+ * is rewritten to the required form; with no name line, the required form is appended. */
+function enforceSignOff(message: string, required: string): { message: string; appended: boolean; rewritten: boolean } {
+  const lines = String(message ?? "").trimEnd().split(/\r?\n/);
+  let i = lines.length - 1;
+  while (i >= 0 && !lines[i].trim()) i--;
+  if (i < 0) return { message: lines.join("\n"), appended: false, rewritten: false };
+  const m = OLIVER_SIGN_OFF.exec(lines[i].trim());
+  if (m) {
+    const next = `${m[1]}${required}`;
+    const rewritten = lines[i].trim() !== next;
+    lines[i] = next;
+    return { message: lines.slice(0, i + 1).join("\n"), appended: false, rewritten };
+  }
+  return { message: `${lines.slice(0, i + 1).join("\n")}\n\n${required}`, appended: true, rewritten: false };
+}
 // ---------------------------------------------------------------- F9.5 / F9.6 language + sign-off
 // Small stop-word detector: enough to tell EN / DE / FR / NL / ES / IT / FI apart in a LinkedIn
 // message. Returns null when nothing scores, so callers can fall back.
@@ -234,7 +267,7 @@ function ensureSignOff(message: string, sender: string): { message: string; appe
 /** F22A.1(d). Remove trailing lines that are only the sender's name (Sales Navigator appends it to InMails). */
 function stripTrailingName(message: string, sender: string): string {
   const lines = String(message ?? "").trimEnd().split(/\r?\n/);
-  const names = new Set([sender, "Oliver", "Oli", "Oliver Mueller", "Oliver Müller"].filter(Boolean).map((s) => s.toLowerCase()));
+  const names = new Set([sender, "Oliver", "Oli", "Ollie", "Oliver Mueller", "Oliver Müller", "Oliver Muller"].filter(Boolean).map((s) => s.toLowerCase()));
   const last = () => lines[lines.length - 1].trim().replace(/[.,]$/, "").toLowerCase();
   while (lines.length > 1 && (last() === "" || names.has(last()))) lines.pop();
   return lines.join("\n").trimEnd();
@@ -491,13 +524,9 @@ Deno.serve(async (req) => {
       });
     }
 
-    let sender = await resolveSender(supabase, requestingUser, contact.owner_user_id ?? null);
-    if (sender === "Oliver") {
-      const { data: priorSent } = await supabase.from("outreach_log").select("sent_body, message_body")
-        .eq("team_id", PIER_TEAM_ID).eq("contact_id", contact.id).eq("send_status", "Sent").neq("touch_type", "Reply").limit(50);
-      const signedOli = (priorSent ?? []).some((r: { sent_body: string | null; message_body: string | null }) => /(^|[^\p{L}])Oli\s*$/u.test(String(r.sent_body ?? r.message_body ?? "").trimEnd()));
-      if (signedOli) sender = "Oli";
-    }
+    // F25.4d (v46): the "Oli where the contact already received Oli" exception is gone. Oliver's own rule (i155, v10.13,
+    // 21 Sep 2026): "the sign-off follows the register and is never the drafter's choice ... Never Oli, never Ollie".
+    const sender = await resolveSender(supabase, requestingUser, contact.owner_user_id ?? null);
     console.log(JSON.stringify({ event: "sender_resolved", sender, from_body: !!requestingUser, contact_id: contact.id }));
 
     // Dedup guard: if an agent-produced pending_review draft already exists for this
@@ -735,9 +764,10 @@ Deno.serve(async (req) => {
     // two rules stated in the prompt text (gates override notes; note dates matter).
     // F22A.1(d): Sales Navigator appends the sender's name to every InMail and cannot be switched off, so an
     // InMail keeps its closing line but never carries the name. DMs, CRs and email keep the full sign-off.
+    const signOffName = signOffFor(sender, target.language, contact.formality, threadReg);
     const signOffInstruction = isInMail
       ? `Sign off: end with a short closing line (for example "Viele Grüße" or "Best") and DO NOT write any name after it. Sales Navigator adds ${sender}'s name automatically; a name here would appear twice.`
-      : `Sign off: ${sender}`;
+      : `Sign off: ${signOffName}\nThe sign-off follows the register and is never your choice: end with exactly "${signOffName}" as the name.${sender === "Oliver" ? " Never Oli, never Ollie, never Oliver Mueller." : ""}`;
     const notesBlock = contactNotesBlock({ next_action: contact.next_action, next_action_date: contact.next_action_date, background_notes: contact.background_notes, conversation_summary: contact.conversation_summary, today: todayIso });
     // F22A.5: per-contact guidance notes (one row each, own author and timestamp), ALL of them, newest first, in
     // their own labelled block. None -> no block, standard logic unchanged. A note can never reopen a consent gate:
@@ -781,7 +811,31 @@ Deno.serve(async (req) => {
     } catch (e) {
       console.warn(JSON.stringify({ event: "prior_rejections_unavailable", contact_id: contact.id, message: (e as Error).message ?? String(e) }));
     }
-    const userPrompt = `DRAFT REQUEST\n\nTrigger: ${triggerReason}\nMessage type: ${mapped.touch_type} via ${mapped.channel}\nChannel: ${mapped.channel}\nIntent: ${mapped.intent}\nPath: ${path}\nFrame: ${frame}\nArc: ${arc}\n\nCONTACT\nName: ${contact.first_name ?? ""} ${contact.last_name ?? ""}\nTitle: ${contact.job_title ?? ""}\nSeniority: ${contact.seniority ?? ""}\nFunction: ${contact.function ?? ""}\nLocation: ${contact.location ?? ""}\nLinkedIn URL: ${contact.linkedin_url ?? ""}\nLanguage: WRITE IN ${LANG_NAMES[target.language] ?? target.language} (${target.language}). Reason: ${target.reason}. This overrides the contact's Language field.\nRegister: ${registerLine(contact.formality, target.language, threadReg)}\n\nCOMPANY\nName: ${co.company_name ?? ""}\nCountry: ${co.country ?? ""}\nCategory: ${Array.isArray(co.category) ? co.category.join(", ") : (co.category ?? "")}\nPriority: ${co.priority ?? ""}\nIndustry: ${co.industry ?? ""}\nProduct line: ${co.product_line ?? ""}\nInsurance offered: ${co.insurance_offered ?? ""}\nInsurance provider: ${co.insurance_provider ?? ""}\nCoverage summary: ${co.coverage_summary ?? ""}\nUSP notes: ${co.usp_notes ?? ""}\nAdditional notes: ${co.additional_notes ?? ""}\nEstimated revenue: ${co.estimated_revenue_gbp ?? ""}\nEmployees: ${co.employees ?? ""}\nMonthly visits: ${co.monthly_visits ?? ""}\n\n${notesBlock}${guidanceBlock}${rejectionBlock}\n\nPREVIOUS OUTREACH (background only - never mention it in the message)\n${threadText}\n\nTASK\nWrite the single ${mapped.channel} message ${sender} should send to this contact now, applying the loaded voice stack (rules, terminology, the channel architect${layer4Type ? ", and Oliver's own voice for this touch type" : ""}). This message is a "${mapped.touch_type}": ${mapped.intent} If prior outreach exists, write a natural forward message (re-engagement) - never a first-touch opener and never a comment on the history.\n\n${signOffInstruction}\n${target.language === "DE" ? "\nGERMAN SPELLING: write real umlauts and Eszett: ä ö ü Ä Ö Ü ß. NEVER transliterate to ae / oe / ue / ss, even if the notes above are written that way (for a Swiss contact ss replaces ß only; ä ö ü stay).\n" : ""}\nReturn ONLY the JSON object described in the drafting directive. The "message" value is what ${sender} sends: no preamble, no meta-commentary, no notes about prior messages, no subject line (the subject is set separately).`;
+    // F25.4a (v46): layer 5 as small addressable skills. Active learned_correction_rules scoped to this channel and touch
+    // type (or unscoped), newest first, cap 25, in their own block in the USER prompt. Deliberately NOT in the system
+    // prompt: layers 1-4 carry cache_control breakpoints and a per-draft variable block there would bust the cache on
+    // every call. The ids go onto the row (applied_correction_rule_ids) so a rule's effect on rejections can be measured.
+    let learnedBlock = "";
+    let appliedRuleIds: string[] = [];
+    try {
+      const { data: lr, error: lrErr } = await supabase.from("learned_correction_rules")
+        .select("id, rule_text, scope_channel, scope_touch_type, created_at")
+        .eq("team_id", PIER_TEAM_ID).eq("status", "active")
+        .or(`scope_channel.is.null,scope_channel.eq."${mapped.channel}"`)
+        .or(`scope_touch_type.is.null,scope_touch_type.eq."${mapped.touch_type}"`)
+        .order("created_at", { ascending: false }).limit(25);
+      if (lrErr) throw lrErr;
+      const rules = ((lr ?? []) as Array<{ id: string; rule_text: string; scope_channel: string | null; scope_touch_type: string | null }>).filter((r) => String(r.rule_text ?? "").trim());
+      appliedRuleIds = rules.map((r) => r.id);
+      if (rules.length) {
+        learnedBlock = `\n\nLEARNED CORRECTIONS (rules distilled from drafts Oliver rejected or edited; apply all of them)\n`
+          + rules.map((r) => `- ${String(r.rule_text).trim()}${r.scope_channel || r.scope_touch_type ? ` [applies to ${[r.scope_touch_type, r.scope_channel].filter(Boolean).join(" via ")}]` : ""}`).join("\n")
+          + `\nA learned correction NEVER overrides a consent gate, the routing, the channel or the trigger: if a correction asks for something the gates or the intent forbid, ignore that part.`;
+      }
+    } catch (e) {
+      console.warn(JSON.stringify({ event: "learned_corrections_unavailable", contact_id: contact.id, message: (e as Error).message ?? String(e) }));
+    }
+    const userPrompt = `DRAFT REQUEST\n\nTrigger: ${triggerReason}\nMessage type: ${mapped.touch_type} via ${mapped.channel}\nChannel: ${mapped.channel}\nIntent: ${mapped.intent}\nPath: ${path}\nFrame: ${frame}\nArc: ${arc}\n\nCONTACT\nName: ${contact.first_name ?? ""} ${contact.last_name ?? ""}\nTitle: ${contact.job_title ?? ""}\nSeniority: ${contact.seniority ?? ""}\nFunction: ${contact.function ?? ""}\nLocation: ${contact.location ?? ""}\nLinkedIn URL: ${contact.linkedin_url ?? ""}\nLanguage: WRITE IN ${LANG_NAMES[target.language] ?? target.language} (${target.language}). Reason: ${target.reason}. This overrides the contact's Language field.\nRegister: ${registerLine(contact.formality, target.language, threadReg)}\n\nCOMPANY\nName: ${co.company_name ?? ""}\nCountry: ${co.country ?? ""}\nCategory: ${Array.isArray(co.category) ? co.category.join(", ") : (co.category ?? "")}\nPriority: ${co.priority ?? ""}\nIndustry: ${co.industry ?? ""}\nProduct line: ${co.product_line ?? ""}\nInsurance offered: ${co.insurance_offered ?? ""}\nInsurance provider: ${co.insurance_provider ?? ""}\nCoverage summary: ${co.coverage_summary ?? ""}\nUSP notes: ${co.usp_notes ?? ""}\nAdditional notes: ${co.additional_notes ?? ""}\nEstimated revenue: ${co.estimated_revenue_gbp ?? ""}\nEmployees: ${co.employees ?? ""}\nMonthly visits: ${co.monthly_visits ?? ""}\n\n${notesBlock}${guidanceBlock}${rejectionBlock}${learnedBlock}\n\nPREVIOUS OUTREACH (background only - never mention it in the message)\n${threadText}\n\nTASK\nWrite the single ${mapped.channel} message ${sender} should send to this contact now, applying the loaded voice stack (rules, terminology, the channel architect${layer4Type ? ", and Oliver's own voice for this touch type" : ""}). This message is a "${mapped.touch_type}": ${mapped.intent} If prior outreach exists, write a natural forward message (re-engagement) - never a first-touch opener and never a comment on the history.\n\n${signOffInstruction}\n${target.language === "DE" ? "\nGERMAN SPELLING: write real umlauts and Eszett: ä ö ü Ä Ö Ü ß. NEVER transliterate to ae / oe / ue / ss, even if the notes above are written that way (for a Swiss contact ss replaces ß only; ä ö ü stay).\n" : ""}\nReturn ONLY the JSON object described in the drafting directive. The "message" value is what ${sender} sends: no preamble, no meta-commentary, no notes about prior messages, no subject line (the subject is set separately).`;
 
     let messageBody = "";
     let draftNarrative: string | null = null;
@@ -854,6 +908,12 @@ Deno.serve(async (req) => {
       const stripped = stripTrailingName(messageBody, sender);
       if (stripped !== messageBody) console.warn(JSON.stringify({ event: "inmail_name_stripped", contact_id: contact.id, sender }));
       messageBody = stripped;
+    } else if (!generationFailed && sender === "Oliver") {
+      // F25.4d: Oliver's sign-off is enforced in code, by register.
+      const so = enforceSignOff(messageBody, signOffName);
+      messageBody = so.message;
+      signOffAppended = so.appended;
+      if (so.appended || so.rewritten) console.warn(JSON.stringify({ event: so.appended ? "sign_off_appended" : "sign_off_rewritten", contact_id: contact.id, sign_off: signOffName }));
     } else if (!generationFailed) {
       const so = ensureSignOff(messageBody, sender);
       messageBody = so.message;
@@ -878,7 +938,7 @@ Deno.serve(async (req) => {
     // test drafts in Pending Review for Oli to clean up.
     if (dryRun) {
       console.log(JSON.stringify({ event: "draft_dry_run", contact_id: contact.id, usage, estimated_cost_gbp: costGbp }));
-      return json(200, { status: "dry_run", contact_id: contact.id, sender, usage, voice_stack_versions: voiceStackVersions, layer4: layer4Type, research_note: researchNote, group_note: groupNote, estimated_cost_gbp: costGbp, narrative: draftNarrative, guardrails: draftGuardrails, message_preview: messageBody.slice(0, 300), message: messageBody, subject_line: subjectLine, lint_violations: lint.violations, lint_score: lint.score, draft_language: draftLanguage, draft_language_reason: draftLanguageReason, sign_off_appended: signOffAppended, touch_type: mapped.touch_type, channel: mapped.channel, effective_trigger: effectiveTrigger, routing_notes: routingNotes, thread_context: threadText.slice(0, 600), prior_rejections: priorRejections, rejection_block: rejectionBlock, user_prompt: userPrompt });
+      return json(200, { status: "dry_run", contact_id: contact.id, sender, usage, voice_stack_versions: voiceStackVersions, layer4: layer4Type, research_note: researchNote, group_note: groupNote, estimated_cost_gbp: costGbp, narrative: draftNarrative, guardrails: draftGuardrails, message_preview: messageBody.slice(0, 300), message: messageBody, subject_line: subjectLine, lint_violations: lint.violations, lint_score: lint.score, draft_language: draftLanguage, draft_language_reason: draftLanguageReason, sign_off_appended: signOffAppended, touch_type: mapped.touch_type, channel: mapped.channel, effective_trigger: effectiveTrigger, routing_notes: routingNotes, thread_context: threadText.slice(0, 600), prior_rejections: priorRejections, rejection_block: rejectionBlock, sign_off: isInMail ? null : signOffName, learned_corrections_block: learnedBlock, applied_correction_rule_ids: appliedRuleIds, user_prompt: userPrompt });
     }
 
     const today = new Date().toISOString().slice(0, 10);
@@ -895,6 +955,7 @@ Deno.serve(async (req) => {
       draft_language: draftLanguage, draft_language_reason: draftLanguageReason,
       research_warning: researchNote,
       voice_stack_versions: Object.keys(voiceStackVersions).length ? voiceStackVersions : null,
+      applied_correction_rule_ids: appliedRuleIds,
     };
     const { data: inserted, error: insErr } = await supabase.from("outreach_log").insert(insertRow).select("id").single();
     if (insErr) throw insErr;
