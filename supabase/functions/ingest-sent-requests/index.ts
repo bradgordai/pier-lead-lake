@@ -6,6 +6,9 @@
 //   matched profileUrl  -> Request sent, evidence = raw "Sent 2 weeks ago" label, cr_pending_min_age_days
 //   absent Request sent -> Not connected (never Accepted / Already connected; never a status set after the run)
 //   no contact row      -> unmatched_sent_requests (Reconciliation tab)
+// v2 (F26 Task 7): the Auto Invitation Withdrawer (6265338156423893) posts here too. Rows carrying linkedinProfile +
+// invitationDate are CONFIRMED withdrawals and go to public.fn_ingest_cr_withdrawals (migration 173): Withdrawn,
+// the invitationDate label as evidence, cr_blocked_until = today + 180. Accepted / Already connected never touched.
 //
 // Accepted body shapes (Make maps whichever it has; ONE call per run either way):
 //   [ {profileUrl, sentDate, timestamp, ...}, ... ]              array of extractor rows (after an Array Aggregate)
@@ -61,6 +64,19 @@ Deno.serve(async (req) => {
   if (!rows) return json(400, { error: "no_rows", detail: "Send an array of extractor rows, {rows:[...]}, or PhantomBuster's {resultObject}." });
 
   const dryRun = new URL(req.url).searchParams.get("dry_run") === "1";
+
+  // deno-lint-ignore no-explicit-any
+  const isWithdrawals = rows.length > 0 && rows.every((r: any) => r && typeof r === "object" && "linkedinProfile" in r && "invitationDate" in r);
+  if (isWithdrawals) {
+    if (dryRun) return json(200, { ok: true, dry_run: true, kind: "withdrawals", rows_in: rows.length, detail: "confirmed withdrawals are facts; nothing to preview" });
+    const { data: w, error: wErr } = await supabase.rpc("fn_ingest_cr_withdrawals", { p_team_id: PIER_TEAM_ID, p_rows: rows });
+    if (wErr) {
+      console.error(JSON.stringify({ event: "withdrawals_failed", function_name: FN, rows_in: rows.length, message: wErr.message }));
+      return json(500, { error: "withdrawals_failed", message: wErr.message });
+    }
+    console.log(JSON.stringify({ event: "withdrawals_ingested", function_name: FN, rows_in: rows.length, withdrawn: w?.withdrawn }));
+    return json(200, { ok: true, kind: "withdrawals", summary: w });
+  }
   const { data, error } = await supabase.rpc("fn_ingest_sent_requests", {
     p_team_id: PIER_TEAM_ID, p_rows: rows, p_dry_run: dryRun, p_force_sweep: false,
   });
