@@ -110,6 +110,12 @@ section 8.1(g); the "To Review" default stands anyway.
   send-approved-callback (the ONE place a send becomes Sent or Cancelled; idempotent on phantom_run_id),
   capture-and-classify-reply, upsert-contact-from-sales-nav, update-contact-on-cr-accepted, ai-edit-draft.
   Also score-company, distill-learned-corrections (cron Mon 05:30, writes 'proposed' rules), proofread-drafts (Haiku, flags only).
+  F26: ingest-sent-requests (Sent Request Extractor 7326870632604661 + Auto Invitation Withdrawer 6265338156423893
+  output; LinkedIn's pending list is the truth for connection_status 'Request sent'). CR queue: cr_queue +
+  v_cr_queue_ordered; dispatcher cron `cr-dispatch` runs only when team_settings.cr_dispatch_enabled (shipped false;
+  Brad switches it on) and hands each CR to the send queue; v_cr_allowance_today is NULL (= stop) when the extractor
+  read is >6 h old. trg_send_effects_on_sent applies fn_apply_send_effects to EVERY Sent message row (hand-logged too),
+  idempotent via outreach_log.send_effects_applied_at. companies.region is derived from country (DACH = DE/AT/CH).
 - Lovable owns every screen; calls Edge Functions with the user's JWT (except generate-daily-insight, secret-only v17).
 - PhantomBuster SENDS: 5691059901018698 Pier LinkedIn Message Sender (DM), 8651232052097344 Pier Sales
   Navigator Message Sender (InMail), 7500783933729451 Pier LinkedIn Auto Connect (CR).
