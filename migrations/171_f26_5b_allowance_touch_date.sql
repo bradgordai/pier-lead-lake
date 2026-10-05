@@ -1,0 +1,49 @@
+-- 171 F26 Task 5 fix: v_cr_allowance_today used coalesce(sent_at_actual, updated_at) for logged CRs. Only 266 of 633
+-- Sent connection requests carry sent_at_actual, and updated_at moves whenever a row is touched (today's merges
+-- repointed 74), so a fresh extract would have read 73 sent today. touch_date is on every row: a CR without
+-- sent_at_actual is treated as sent at the END of its touch_date, which counts it on the boundary day rather than
+-- missing it (over-counting is the safe direction for a cap). Found by the rolled-back fresh-data test.
+
+create or replace view public.v_cr_allowance_today with (security_invoker = true) as
+with latest as (
+  select distinct on (r.team_id) r.team_id, r.id as run_id, r.extracted_at, r.received_at
+    from public.cr_extractor_runs r
+   where r.row_count > 0
+   order by r.team_id, r.extracted_at desc nulls last, r.received_at desc
+),
+teams as (select t.id as team_id from public.teams t),
+x as (
+  select tm.team_id, l.run_id, l.extracted_at,
+         (l.extracted_at is null or l.extracted_at < now() - interval '6 hours') as stale,
+         (select count(*) from public.cr_extractor_rows w where w.run_id = l.run_id and w.min_age_days = 0) as extractor_today,
+         (select count(*) from public.cr_extractor_rows w where w.run_id = l.run_id and w.min_age_days < 7) as extractor_week,
+         (select count(*) from public.outreach_log o
+           where o.team_id = tm.team_id and o.touch_type::text = 'Connection request' and o.send_status::text = 'Sent'
+             and coalesce(o.sent_at_actual, (o.touch_date + 1)::timestamptz - interval '1 second') > coalesce(l.extracted_at, '-infinity'::timestamptz)
+             and coalesce(o.sent_at_actual, (o.touch_date + 1)::timestamptz - interval '1 second') >= date_trunc('day', now())) as logged_today_after_read,
+         (select count(*) from public.outreach_log o
+           where o.team_id = tm.team_id and o.touch_type::text = 'Connection request' and o.send_status::text = 'Sent'
+             and coalesce(o.sent_at_actual, (o.touch_date + 1)::timestamptz - interval '1 second') > coalesce(l.extracted_at, '-infinity'::timestamptz)
+             and coalesce(o.sent_at_actual, (o.touch_date + 1)::timestamptz - interval '1 second') >= now() - interval '7 days') as logged_week_after_read
+    from teams tm left join latest l on l.team_id = tm.team_id
+)
+select x.team_id,
+       x.run_id as extractor_run_id,
+       x.extracted_at as extractor_read_at,
+       round(extract(epoch from (now() - x.extracted_at)) / 60)::int as extractor_age_minutes,
+       x.stale,
+       case when x.stale then null else x.extractor_today + x.logged_today_after_read end as sent_today,
+       case when x.stale then null else x.extractor_week + x.logged_week_after_read end as sent_this_week,
+       20 as daily_cap,
+       100 as weekly_cap,
+       case when x.stale then null
+            else greatest(0, least(20 - (x.extractor_today + x.logged_today_after_read), 100 - (x.extractor_week + x.logged_week_after_read))) end as remaining_today,
+       case when x.stale then 'stale'
+            when x.extractor_today + x.logged_today_after_read > 20 or x.extractor_week + x.logged_week_after_read > 100 then 'over_cap'
+            when x.extractor_today + x.logged_today_after_read = 20 or x.extractor_week + x.logged_week_after_read = 100 then 'at_cap'
+            else 'ok' end as state
+  from x;
+comment on view public.v_cr_allowance_today is
+  'F26.5: CRs sent today / this week from the Sent Request Extractor (min age 0 / <7) plus CRs logged after its last read. NULL counts and state=stale when the extractor data is older than 6 hours: the dispatcher stops on NULL.';
+grant select on public.v_cr_allowance_today to authenticated;
+revoke all on public.v_cr_allowance_today from anon;
